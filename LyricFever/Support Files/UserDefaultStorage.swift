@@ -69,6 +69,11 @@ class UserDefaultStorage {
     // False: Spotify, True: Apple Music
     @ObservableUserDefault(.init(key: "spotifyOrAppleMusic", defaultValue: false, store: .standard))
     @ObservationIgnored var spotifyOrAppleMusic: Bool
+    // When true, override spotifyOrAppleMusic and route via Plexamp. Talks to Plexamp's
+    // local HTTP control API on port 32500 plus reads ~/Library/Application Support/Plexamp/PlayQueue.json
+    // for track metadata; lyrics resolve via Koto's self-hosted lyrics.9x.studio /api/get endpoint.
+    @ObservableUserDefault(.init(key: "usePlexamp", defaultValue: false, store: .standard))
+    @ObservationIgnored var usePlexamp: Bool
     @ObservableUserDefault(.init(key: "latestUpdateWindowShown", defaultValue: 0, store: .standard))
     @ObservationIgnored var latestUpdateWindowShown: Int
     #endif

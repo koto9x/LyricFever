@@ -14,17 +14,22 @@ enum PlayerType: CustomStringConvertible, CaseIterable, Identifiable {
                 return "Spotify"
             case .appleMusic:
                 return "Apple Music"
+            case .plexamp:
+                return "Plexamp"
         }
     }
-    
+
     var imageName: String {
         switch self {
             case .spotify:
                 return "spotify"
             case .appleMusic:
                 return "music"
+            case .plexamp:
+                return "music.note.house"
         }
     }
     case spotify
     case appleMusic
+    case plexamp
 }

@@ -46,6 +46,32 @@ import MediaRemoteAdapter
         formatter.zeroFormattingBehavior = [.pad]
         return formatter.string(from: TimeInterval(totalSeconds)) ?? "0:00"
     }
+    #if os(macOS)
+    /// Plexamp doesn't post DistributedNotificationCenter events the way Spotify and
+    /// Apple Music do, so we drive song-change + play-state updates off PlexampPlayer's
+    /// own polling callbacks. ViewModel keeps responsibility for the SwiftUI/CoreData
+    /// state mutations.
+    private func initPlexampObservation() {
+        plexampPlayer.onTrackChange = { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.currentPlayer == .plexamp else { return }
+                self.setCurrentProperties()
+            }
+        }
+        plexampPlayer.onPlaybackStateChange = { [weak self] isPlaying in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.currentPlayer == .plexamp else { return }
+                self.isPlaying = isPlaying
+                if !isPlaying {
+                    self.currentLyricsDriftFix?.cancel()
+                }
+            }
+        }
+    }
+    #endif
+
     private func initAppleMusicWorkaround() {
         musicController.onTrackInfoReceived = { data in
             print("Track info received")
@@ -100,12 +126,13 @@ import MediaRemoteAdapter
     var updaterService = UpdaterService()
     var appleMusicPlayer = AppleMusicPlayer()
     var spotifyPlayer = SpotifyPlayer()
+    var plexampPlayer = PlexampPlayer()
     #else
     var currentTab = TabType.nowPlaying
     var spotifyPlayer = TVSpotifyPlayer()
     var hasWebApiOnboarded = false
     #endif
-    
+
     var currentPlayerInstance: Player {
         #if os(macOS)
         switch currentPlayer {
@@ -113,6 +140,8 @@ import MediaRemoteAdapter
                 return appleMusicPlayer
             case .spotify:
                 return spotifyPlayer
+            case .plexamp:
+                return plexampPlayer
         }
         #else
         return spotifyPlayer
@@ -239,16 +268,25 @@ import MediaRemoteAdapter
     #if os(macOS)
     var currentPlayer: PlayerType {
         get {
+            // Plexamp overrides the Spotify/Apple Music toggle when explicitly enabled.
+            if self.userDefaultStorage.usePlexamp {
+                return .plexamp
+            }
             if self.userDefaultStorage.spotifyOrAppleMusic {
                 return .appleMusic
             } else {
                 return .spotify
             }
         } set {
-            if newValue == .appleMusic {
-                self.userDefaultStorage.spotifyOrAppleMusic = true
-            } else {
-                self.userDefaultStorage.spotifyOrAppleMusic = false
+            switch newValue {
+                case .plexamp:
+                    self.userDefaultStorage.usePlexamp = true
+                case .appleMusic:
+                    self.userDefaultStorage.usePlexamp = false
+                    self.userDefaultStorage.spotifyOrAppleMusic = true
+                case .spotify:
+                    self.userDefaultStorage.usePlexamp = false
+                    self.userDefaultStorage.spotifyOrAppleMusic = false
             }
         }
     }
@@ -268,11 +306,22 @@ import MediaRemoteAdapter
     var spotifyLyricProvider = SpotifyLyricProvider()
     var lRCLyricProvider = LRCLIBLyricProvider()
     var netEaseLyricProvider = NetEaseLyricProvider()
+    var lyrics9xLyricProvider = Lyrics9xLyricProvider()
     #if os(macOS)
     var localFileUploadProvider = LocalFileUploadProvider()
     #endif
-    @ObservationIgnored lazy var allNetworkLyricProviders: [LyricProvider] = [spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
-    
+    // When the user is on Plexamp, try the self-hosted lyrics.9x.studio first; fall back
+    // through the existing chain on a 404 / empty response. Other players keep the
+    // pre-existing ordering.
+    var allNetworkLyricProviders: [LyricProvider] {
+        #if os(macOS)
+        if currentPlayer == .plexamp {
+            return [lyrics9xLyricProvider, lRCLyricProvider, spotifyLyricProvider, netEaseLyricProvider]
+        }
+        #endif
+        return [spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
+    }
+
     // custom order because LRCLIB is tweaking for the time being
     @ObservationIgnored lazy var allNetworkLyricProvidersForSearch: [LyricProvider] = [spotifyLyricProvider, netEaseLyricProvider, lRCLyricProvider]
     
@@ -299,6 +348,9 @@ import MediaRemoteAdapter
         coreDataContainer = NSPersistentContainer(name: "Lyrics")
         
         initAppleMusicWorkaround()
+        #if os(macOS)
+        initPlexampObservation()
+        #endif
         
         coreDataContainer.loadPersistentStores { description, error in
             if let error = error {
@@ -722,6 +774,21 @@ import MediaRemoteAdapter
                     self.currentTime = CurrentTimeWithStoredDate(currentTime: 0)
                     print(currentTrack)
                 }
+            case .plexamp:
+                guard let track = plexampPlayer.trackName, let artist = plexampPlayer.artistName, let duration = plexampPlayer.duration else {
+                    currentlyPlayingName = nil
+                    currentlyPlayingArtist = nil
+                    self.currentAlbumName = nil
+                    return
+                }
+                // Plexamp's ratingKey is the stable per-song identifier; use it for `currentlyPlaying`
+                // so the upstream song-change Task fires on track changes.
+                currentlyPlaying = plexampPlayer.metadata?.ratingKey
+                currentlyPlayingName = track
+                currentlyPlayingArtist = artist
+                self.duration = duration
+                self.currentAlbumName = plexampPlayer.albumName
+                self.currentTime = CurrentTimeWithStoredDate(currentTime: 0)
         }
     }
     
