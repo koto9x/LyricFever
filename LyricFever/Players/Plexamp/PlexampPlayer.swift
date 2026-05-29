@@ -48,6 +48,12 @@ class PlexampPlayer: Player {
     private var commandID = 0
     private var pollTask: Task<Void, Never>?
 
+    /// "What has the callback been told about so far?" — separate from `timeline`/`metadata`
+    /// so callbacks fire as soon as they're hooked, even if polling discovered the state
+    /// before the ViewModel had a chance to subscribe.
+    private var lastReportedRatingKey: String?
+    private var lastReportedPlaying: Bool?
+
     /// Called from the polling task whenever the active ratingKey changes
     /// (i.e. the user switched to a different track in Plexamp). Owner is
     /// responsible for hopping to MainActor before touching SwiftUI state.
@@ -66,6 +72,7 @@ class PlexampPlayer: Player {
     }()
 
     init() {
+        NSLog("PlexampPlayer: init, starting polling task")
         startPolling()
     }
 
@@ -179,9 +186,11 @@ class PlexampPlayer: Player {
     private func pollOnce() async {
         // Skip cheaply when Plexamp isn't even running
         guard isRunning else {
+            if timeline != nil { NSLog("PlexampPlayer: Plexamp not running, clearing timeline") }
             timeline = nil
             return
         }
+        NSLog("PlexampPlayer: pollOnce — Plexamp running, fetching timeline")
         commandID += 1
         var components = URLComponents(url: Self.playerAPI.appendingPathComponent("player/timeline/poll"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -196,18 +205,38 @@ class PlexampPlayer: Player {
 
         do {
             let (data, _) = try await urlSession.data(for: req)
-            guard let parsed = Self.parseTimelineXML(data: data) else { return }
-            let prevRatingKey = metadata?.ratingKey
-            let prevPlaying = timeline?.state == "playing"
+            guard let parsed = Self.parseTimelineXML(data: data) else {
+                NSLog("PlexampPlayer: parseTimelineXML returned nil (no music timeline in response)")
+                return
+            }
+            NSLog("PlexampPlayer: parsed timeline state=\(parsed.state) ratingKey=\(parsed.ratingKey ?? "nil")")
             timeline = parsed
+            NSLog("PlexampPlayer: assigned timeline; lastReportedRatingKey=\(lastReportedRatingKey ?? "nil")")
             lastPollDate = Date()
-            if let key = parsed.ratingKey, prevRatingKey != key {
-                metadata = Self.readPlayQueueMetadata(forRatingKey: key)
-                onTrackChange?(key)
+            if let key = parsed.ratingKey {
+                NSLog("PlexampPlayer: have key=\(key), metadata?.ratingKey=\(metadata?.ratingKey ?? "nil")")
+                if metadata?.ratingKey != key {
+                    NSLog("PlexampPlayer: about to read PlayQueue metadata for key=\(key)")
+                    metadata = Self.readPlayQueueMetadata(forRatingKey: key)
+                    NSLog("PlexampPlayer: read PlayQueue metadata result: title=\(metadata?.title ?? "nil") artist=\(metadata?.artist ?? "nil")")
+                }
+                NSLog("PlexampPlayer: checking lastReportedRatingKey \(lastReportedRatingKey ?? "nil") vs key \(key)")
+                if lastReportedRatingKey != key {
+                    if let cb = onTrackChange {
+                        NSLog("PlexampPlayer: firing onTrackChange(\(key))")
+                        cb(key)
+                        lastReportedRatingKey = key
+                    } else {
+                        NSLog("PlexampPlayer: onTrackChange callback is nil — ViewModel hasn't subscribed yet")
+                    }
+                }
+            } else {
+                NSLog("PlexampPlayer: parsed.ratingKey was nil despite parser said \(parsed.ratingKey ?? "nil")")
             }
             let nowPlaying = parsed.state == "playing"
-            if nowPlaying != prevPlaying {
-                onPlaybackStateChange?(nowPlaying)
+            if lastReportedPlaying != nowPlaying, let cb = onPlaybackStateChange {
+                cb(nowPlaying)
+                lastReportedPlaying = nowPlaying
             }
         } catch {
             // Network errors are silent — Plexamp may have just quit or the poll may have raced.

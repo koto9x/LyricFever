@@ -85,7 +85,7 @@ struct FullscreenView: View {
             .onHover { hover in
                 currentHover = hover ? .showlyrics : .none
             }
-            .keyboardShortcut("h")
+            .keyboardShortcut("l")
             #endif
             .disabled(viewmodel.currentlyPlayingLyrics.isEmpty)
 
@@ -136,6 +136,21 @@ struct FullscreenView: View {
                     Toggle("Blur surrounding lyrics", isOn: $viewmodel.userDefaultStorage.blurFullscreen)
                     Toggle("Animate on startup", isOn: $viewmodel.userDefaultStorage.animateOnStartupFullscreen)
                     Toggle("Windowed fullscreen (stays on current Space)", isOn: $viewmodel.userDefaultStorage.useWindowedFullscreen)
+                    Divider()
+                    Button {
+                        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "fullscreen" }) {
+                            window.toggleFullScreen(nil)
+                        }
+                        showSettingsPopover = false
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            Text("Toggle native fullscreen")
+                            Spacer()
+                            Text("\u{2303}\u{2318}F").foregroundColor(.secondary).font(.caption)
+                        }
+                    }
+                    .buttonStyle(.borderless)
                     Button("Reset to default") {
 
                     }
@@ -220,7 +235,7 @@ struct FullscreenView: View {
             case .playpause:
                 viewmodel.isPlaying ? "Pause (spacebar)" : "Play (spacebar)"
             case .showlyrics:
-                viewmodel.showLyrics ? "Hide lyrics (⌘ + H)" : "Show lyrics (⌘ + H)"
+                viewmodel.showLyrics ? "Hide lyrics (⌘ + L)" : "Show lyrics (⌘ + L)"
             case .pauseanimation:
                 animate ? "Pause animations (saves battery) (⌘ + A)" : "Unpause animations (uses battery) (⌘ + A)"
             case .volumelow:

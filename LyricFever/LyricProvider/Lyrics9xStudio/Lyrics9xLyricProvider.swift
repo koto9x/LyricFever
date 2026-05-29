@@ -46,7 +46,7 @@ class Lyrics9xLyricProvider: LyricProvider {
         guard let url = comps.url else {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
-        print("Lyrics9x /api/get: \(url.absoluteString)")
+        NSLog("Lyrics9x /api/get: \(url.absoluteString)")
         let (data, response) = try await urlSession.data(for: URLRequest(url: url))
         // 404 == not in the self-hosted library; let the chain fall through to LRCLIB.
         if let http = response as? HTTPURLResponse, http.statusCode == 404 {

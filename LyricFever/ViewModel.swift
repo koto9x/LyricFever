@@ -52,14 +52,21 @@ import MediaRemoteAdapter
     /// own polling callbacks. ViewModel keeps responsibility for the SwiftUI/CoreData
     /// state mutations.
     private func initPlexampObservation() {
-        plexampPlayer.onTrackChange = { [weak self] _ in
+        NSLog("ViewModel: initPlexampObservation — usePlexamp via storage=\(userDefaultStorage.usePlexamp), via UserDefaults.standard=\(UserDefaults.standard.bool(forKey: "usePlexamp")), spotifyOrAppleMusic=\(userDefaultStorage.spotifyOrAppleMusic), currentPlayer=\(currentPlayer)")
+        plexampPlayer.onTrackChange = { [weak self] key in
+            NSLog("ViewModel: PlexampPlayer.onTrackChange fired with key=\(key ?? "nil")")
             guard let self else { return }
             Task { @MainActor in
-                guard self.currentPlayer == .plexamp else { return }
+                guard self.currentPlayer == .plexamp else {
+                    NSLog("ViewModel: ignoring Plexamp track change — currentPlayer is \(self.currentPlayer)")
+                    return
+                }
+                NSLog("ViewModel: calling setCurrentProperties for Plexamp track change")
                 self.setCurrentProperties()
             }
         }
         plexampPlayer.onPlaybackStateChange = { [weak self] isPlaying in
+            NSLog("ViewModel: PlexampPlayer.onPlaybackStateChange fired isPlaying=\(isPlaying)")
             guard let self else { return }
             Task { @MainActor in
                 guard self.currentPlayer == .plexamp else { return }
@@ -414,6 +421,7 @@ import MediaRemoteAdapter
         guard let currentlyPlaying, let currentlyPlayingName else {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
+        NSLog("FetchAllNetworkLyrics: chain order = \(allNetworkLyricProviders.map { $0.providerName })")
         for networkLyricProvider in allNetworkLyricProviders {
             do {
                 print("FetchAllNetworkLyrics: fetching from \(networkLyricProvider.providerName)")
@@ -731,8 +739,10 @@ import MediaRemoteAdapter
         translatedLyric = []
         romanizedLyrics = []
         chineseConversionLyrics = []
-        
+
+        NSLog("onCurrentlyPlayingIDChange: hasOnboarded=\(userDefaultStorage.hasOnboarded) currentlyPlaying=\(currentlyPlaying ?? "nil") currentlyPlayingName=\(currentlyPlayingName ?? "nil")")
         if userDefaultStorage.hasOnboarded, let currentlyPlaying = currentlyPlaying, let currentlyPlayingName = currentlyPlayingName, let lyrics = await fetch(for: currentlyPlaying, currentlyPlayingName) {
+            NSLog("onCurrentlyPlayingIDChange: fetched \(lyrics.count) lyric lines")
             setNewLyricsColorTranslationRomanizationAndStartUpdater(with: lyrics)
 //            currentlyPlayingLyrics = lyrics
 //            setBackgroundColor()
@@ -775,12 +785,15 @@ import MediaRemoteAdapter
                     print(currentTrack)
                 }
             case .plexamp:
+                NSLog("setCurrentProperties: Plexamp branch — trackName=\(plexampPlayer.trackName ?? "nil") artistName=\(plexampPlayer.artistName ?? "nil") duration=\(plexampPlayer.duration ?? -1) albumName=\(plexampPlayer.albumName ?? "nil") metadata.ratingKey=\(plexampPlayer.metadata?.ratingKey ?? "nil")")
                 guard let track = plexampPlayer.trackName, let artist = plexampPlayer.artistName, let duration = plexampPlayer.duration else {
+                    NSLog("setCurrentProperties: Plexamp guard failed — clearing currentlyPlaying state")
                     currentlyPlayingName = nil
                     currentlyPlayingArtist = nil
                     self.currentAlbumName = nil
                     return
                 }
+                NSLog("setCurrentProperties: Plexamp guard passed — setting currentlyPlaying=\(plexampPlayer.metadata?.ratingKey ?? "nil")")
                 // Plexamp's ratingKey is the stable per-song identifier; use it for `currentlyPlaying`
                 // so the upstream song-change Task fires on track changes.
                 currentlyPlaying = plexampPlayer.metadata?.ratingKey

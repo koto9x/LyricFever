@@ -171,8 +171,8 @@ struct LyricFever: App {
                     await viewmodel.appleMusicStarter()
                 }
             }
-            .onChange(of: viewmodel.currentlyPlaying) {
-                print("song change")
+            .onChange(of: viewmodel.currentlyPlaying) { _, newValue in
+                NSLog("LyricFever Scene: onChange currentlyPlaying -> \(newValue ?? "nil")")
                 Task {
                     await viewmodel.onCurrentlyPlayingIDChange()
                 }
