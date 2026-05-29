@@ -217,7 +217,10 @@ struct LyricFever: App {
                                 window.toggleFullScreen(nil)
                             }
                             window.isRestorable = false
-                            window.collectionBehavior = .fullScreenPrimary
+                            // styleMask first; on Tahoe (macOS 26) setting collectionBehavior before
+                            // the styleMask change can leave the green "enter fullscreen" traffic
+                            // light greyed out because the system re-evaluates fullscreen eligibility
+                            // when styleMask flips.
                             window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
                             window.titlebarAppearsTransparent = true
                             window.titleVisibility = .hidden
@@ -225,6 +228,9 @@ struct LyricFever: App {
                             window.isMovableByWindowBackground = true
                             window.level = .normal
                             window.setFrame(screen.visibleFrame, display: true)
+                            // collectionBehavior last, after styleMask is settled, so the green
+                            // traffic light stays enabled across macOS versions.
+                            window.collectionBehavior = .fullScreenPrimary
                             window.makeKeyAndOrderFront(nil)
                         } else {
                             // Native fullscreen (default, existing behavior).
