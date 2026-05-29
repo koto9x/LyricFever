@@ -7,9 +7,9 @@
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUAutomaticallyUpdate</key>
-	<true/>
+	<false/>
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
 	<key>SUEnableDownloaderService</key>
 	<false/>
 	<key>SUEnableInstallerLauncherService</key>
