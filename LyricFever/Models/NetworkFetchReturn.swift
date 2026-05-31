@@ -25,15 +25,40 @@ struct NetworkFetchReturn {
     }
 
     func processed(withSongName songName: String, duration: Int) -> NetworkFetchReturn {
-        let filtered = lyrics.filter { !$0.words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
         guard lyrics.count > 1 else {
             print("FetchLyrics NetworkFetchReturn: count is less than 2. returning myself")
             return self
         }
 
+        // Filter empty lines while keeping romanization + translation arrays
+        // aligned to the post-filter lyrics array. Without this, ViewModel's
+        // server-data alignment check (`serverTrn.count == currentlyPlayingLyrics.count`)
+        // fails and the chain falls through to Mecab + Apple Translation
+        // even when the server provided both layers.
+        var filteredLyrics: [LyricLine] = []
+        var filteredRoman: [String] = []
+        var filteredTrans: [String] = []
+        for (i, line) in lyrics.enumerated() {
+            if line.words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            filteredLyrics.append(line)
+            if let rom = romanization, i < rom.count { filteredRoman.append(rom[i]) }
+            if let trn = translation, i < trn.count { filteredTrans.append(trn[i]) }
+        }
+
         let nowPlayingLine = LyricLine(startTime: Double(duration + 5000), words: "Now Playing: \(songName)")
-        return NetworkFetchReturn(lyrics: filtered + [nowPlayingLine], colorData: colorData, romanization: romanization, translation: translation, language: language)
+        filteredLyrics.append(nowPlayingLine)
+        // Now-Playing line has no enrichment counterpart — pad both arrays with
+        // empty strings to keep the count match.
+        if !filteredRoman.isEmpty { filteredRoman.append("") }
+        if !filteredTrans.isEmpty { filteredTrans.append("") }
+
+        return NetworkFetchReturn(
+            lyrics: filteredLyrics,
+            colorData: colorData,
+            romanization: filteredRoman.isEmpty ? nil : filteredRoman,
+            translation: filteredTrans.isEmpty ? nil : filteredTrans,
+            language: language
+        )
     }
 }
 

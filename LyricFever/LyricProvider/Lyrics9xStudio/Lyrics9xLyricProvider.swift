@@ -119,4 +119,44 @@ class Lyrics9xLyricProvider: LyricProvider {
     func search(trackName: String, artistName: String) async throws -> [SongResult] {
         return []
     }
+
+    /// Enrichment-only mode for the case where lyrics were already loaded
+    /// (typically from CoreData cache) and we need just romanization +
+    /// translation aligned to the existing `[LyricLine]`. Same HTTP call as
+    /// `fetchNetworkLyrics`, but instead of producing a new LyricLine array
+    /// we look up each existing line's `startTimeMS` against the server's
+    /// per-line maps. Lines the server didn't enrich come back as "".
+    @MainActor
+    func fetchEnrichmentOnly(trackName: String, artist: String?, album: String?, existingLyrics: [LyricLine]) async throws -> (romanization: [String]?, translation: [String]?, language: String?) {
+        guard let artist, !artist.isEmpty, !existingLyrics.isEmpty else { return (nil, nil, nil) }
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "artist_name", value: artist),
+            URLQueryItem(name: "track_name", value: trackName),
+        ]
+        if let album, !album.isEmpty {
+            items.append(URLQueryItem(name: "album_name", value: album))
+        }
+        guard var comps = URLComponents(string: Self.baseURL) else { return (nil, nil, nil) }
+        comps.path = "/api/lookup"
+        comps.queryItems = items
+        guard let url = comps.url else { return (nil, nil, nil) }
+        print("Lyrics9x /api/lookup (enrichment-only): \(url.absoluteString)")
+        let (data, response) = try await urlSession.data(for: URLRequest(url: url))
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+            return (nil, nil, nil)
+        }
+        let decoded = try JSONDecoder().decode(LookupResponse.self, from: data)
+        var romanArr: [String]? = nil
+        var translateArr: [String]? = nil
+        if let rom = decoded.romanization, !rom.isEmpty {
+            let map = Self.indexLRCByTimestamp(rom)
+            romanArr = existingLyrics.map { map[$0.startTimeMS] ?? "" }
+        }
+        if let trn = decoded.translation, !trn.isEmpty {
+            let map = Self.indexLRCByTimestamp(trn)
+            translateArr = existingLyrics.map { map[$0.startTimeMS] ?? "" }
+        }
+        print("Lyrics9x enrichment-only: language=\(decoded.language ?? "?") rom=\(romanArr?.count ?? 0) trn=\(translateArr?.count ?? 0) for \(existingLyrics.count) lines")
+        return (romanArr, translateArr, decoded.language)
+    }
 }

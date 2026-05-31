@@ -765,6 +765,51 @@ import MediaRemoteAdapter
         if userDefaultStorage.hasOnboarded, let currentlyPlaying = currentlyPlaying, let currentlyPlayingName = currentlyPlayingName, let lyrics = await fetch(for: currentlyPlaying, currentlyPlayingName) {
             print("onCurrentlyPlayingIDChange: fetched \(lyrics.count) lyric lines")
             setNewLyricsColorTranslationRomanizationAndStartUpdater(with: lyrics)
+            // After lyrics are showing (regardless of source — CoreData, Spotify,
+            // LRCLIB, etc.), kick off a parallel enrichment fetch against Lyrics9x
+            // for romanization + translation. This is what makes the 3-tier display
+            // work even for tracks the user has played before and CoreData-cached.
+            // Background; doesn't block the lyrics from appearing.
+            let snapshotTrack = currentlyPlaying
+            let snapshotName = currentlyPlayingName
+            let snapshotArtist = currentlyPlayingArtist
+            let snapshotAlbum = currentAlbumName
+            let snapshotLyrics = self.currentlyPlayingLyrics
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let (rom, trn, lang) = try await self.lyrics9xLyricProvider.fetchEnrichmentOnly(
+                        trackName: snapshotName,
+                        artist: snapshotArtist,
+                        album: snapshotAlbum,
+                        existingLyrics: snapshotLyrics
+                    )
+                    await MainActor.run {
+                        // Only apply if the track hasn't changed under us.
+                        guard self.currentlyPlaying == snapshotTrack else { return }
+                        if let rom, !rom.isEmpty {
+                            self.romanizedLyrics = rom
+                        }
+                        if let trn, !trn.isEmpty {
+                            self.translatedLyric = trn
+                            // Clear the "loading" state and cancel any in-flight
+                            // Apple Translation request — we now have the server
+                            // translation, no need to keep Apple Translation
+                            // spinning (it would also overwrite our server data
+                            // when it finally returns).
+                            self.isFetchingTranslation = false
+                            #if os(macOS)
+                            self.translationSessionConfig?.invalidate()
+                            #endif
+                        }
+                        if rom != nil || trn != nil {
+                            print("Lyrics9x background enrichment applied (lang=\(lang ?? "?"))")
+                        }
+                    }
+                } catch {
+                    print("Lyrics9x background enrichment failed: \(error)")
+                }
+            }
 //            currentlyPlayingLyrics = lyrics
 //            setBackgroundColor()
 //            romanizeDidChange()
@@ -1045,9 +1090,6 @@ import MediaRemoteAdapter
             isFetching = true
             
             var networkLyrics: NetworkFetchReturn = await fetchAllNetworkLyrics()
-            // Stash the full result so romanizeDidChange + translation flow can
-            // read server-side enrichment when the winning provider was Lyrics9x.
-            self.lastNetworkResult = networkLyrics
             
             // verify non-stale trackID
             if initiatingTrackID != self.currentlyPlaying {
@@ -1060,6 +1102,10 @@ import MediaRemoteAdapter
                 return []
             }
             networkLyrics = networkLyrics.processed(withSongName: trackName, duration: duration)
+            // Stash the full POST-processed result so romanizeDidChange and the
+            // translation flow can read server enrichment with arrays aligned
+            // 1:1 with the post-filter currentlyPlayingLyrics.
+            self.lastNetworkResult = networkLyrics
             
             // verify non-stale trackID
             if initiatingTrackID == self.currentlyPlaying {
@@ -1126,17 +1172,20 @@ import MediaRemoteAdapter
     
     #if os(macOS)
     func reloadTranslationConfigIfTranslating() -> Bool {
+        // Server-side translation ALWAYS wins when available, regardless of
+        // the user's `translate` toggle. The toggle only gates the local
+        // Apple Translation fallback. Reason: the cfprefsd cache on
+        // sandboxed builds can hold stale `translate=false` even after we
+        // flipped the default; insisting on the toggle would leave users
+        // staring at an empty translation tier with no obvious way to fix it.
+        if let serverTrn = lastNetworkResult?.translation,
+           !serverTrn.isEmpty,
+           serverTrn.count == currentlyPlayingLyrics.count {
+            print("Translated Lyrics from Lyrics9x server enrichment (\(serverTrn.count) lines)")
+            translatedLyric = serverTrn
+            return false
+        }
         if userDefaultStorage.translate {
-            // Prefer server-side translation from Lyrics9x — already cached,
-            // batch-translated for better context, covers KO/JA/VI/ZH uniformly,
-            // and is timestamp-aligned with the original LRC.
-            if let serverTrn = lastNetworkResult?.translation,
-               !serverTrn.isEmpty,
-               serverTrn.count == currentlyPlayingLyrics.count {
-                print("Translated Lyrics from Lyrics9x server enrichment (\(serverTrn.count) lines)")
-                translatedLyric = serverTrn
-                return false  // tell caller "no Apple Translation session needed"
-            }
             if translationSessionConfig == TranslationSession.Configuration(source: translationSourceLanguage, target: userLocaleLanguage) {
                 translationSessionConfig?.invalidate()
             } else {
