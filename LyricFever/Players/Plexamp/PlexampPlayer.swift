@@ -72,7 +72,7 @@ class PlexampPlayer: Player {
     }()
 
     init() {
-        NSLog("PlexampPlayer: init, starting polling task")
+        print("PlexampPlayer: init, starting polling task")
         startPolling()
     }
 
@@ -186,11 +186,11 @@ class PlexampPlayer: Player {
     private func pollOnce() async {
         // Skip cheaply when Plexamp isn't even running
         guard isRunning else {
-            if timeline != nil { NSLog("PlexampPlayer: Plexamp not running, clearing timeline") }
+            if timeline != nil { print("PlexampPlayer: Plexamp not running, clearing timeline") }
             timeline = nil
             return
         }
-        NSLog("PlexampPlayer: pollOnce — Plexamp running, fetching timeline")
+        print("PlexampPlayer: pollOnce — Plexamp running, fetching timeline")
         commandID += 1
         var components = URLComponents(url: Self.playerAPI.appendingPathComponent("player/timeline/poll"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -206,32 +206,32 @@ class PlexampPlayer: Player {
         do {
             let (data, _) = try await urlSession.data(for: req)
             guard let parsed = Self.parseTimelineXML(data: data) else {
-                NSLog("PlexampPlayer: parseTimelineXML returned nil (no music timeline in response)")
+                print("PlexampPlayer: parseTimelineXML returned nil (no music timeline in response)")
                 return
             }
-            NSLog("PlexampPlayer: parsed timeline state=\(parsed.state) ratingKey=\(parsed.ratingKey ?? "nil")")
+            print("PlexampPlayer: parsed timeline state=\(parsed.state) ratingKey=\(parsed.ratingKey ?? "nil")")
             timeline = parsed
-            NSLog("PlexampPlayer: assigned timeline; lastReportedRatingKey=\(lastReportedRatingKey ?? "nil")")
+            print("PlexampPlayer: assigned timeline; lastReportedRatingKey=\(lastReportedRatingKey ?? "nil")")
             lastPollDate = Date()
             if let key = parsed.ratingKey {
-                NSLog("PlexampPlayer: have key=\(key), metadata?.ratingKey=\(metadata?.ratingKey ?? "nil")")
+                print("PlexampPlayer: have key=\(key), metadata?.ratingKey=\(metadata?.ratingKey ?? "nil")")
                 if metadata?.ratingKey != key {
-                    NSLog("PlexampPlayer: about to read PlayQueue metadata for key=\(key)")
+                    print("PlexampPlayer: about to read PlayQueue metadata for key=\(key)")
                     metadata = Self.readPlayQueueMetadata(forRatingKey: key)
-                    NSLog("PlexampPlayer: read PlayQueue metadata result: title=\(metadata?.title ?? "nil") artist=\(metadata?.artist ?? "nil")")
+                    print("PlexampPlayer: read PlayQueue metadata result: title=\(metadata?.title ?? "nil") artist=\(metadata?.artist ?? "nil")")
                 }
-                NSLog("PlexampPlayer: checking lastReportedRatingKey \(lastReportedRatingKey ?? "nil") vs key \(key)")
+                print("PlexampPlayer: checking lastReportedRatingKey \(lastReportedRatingKey ?? "nil") vs key \(key)")
                 if lastReportedRatingKey != key {
                     if let cb = onTrackChange {
-                        NSLog("PlexampPlayer: firing onTrackChange(\(key))")
+                        print("PlexampPlayer: firing onTrackChange(\(key))")
                         cb(key)
                         lastReportedRatingKey = key
                     } else {
-                        NSLog("PlexampPlayer: onTrackChange callback is nil — ViewModel hasn't subscribed yet")
+                        print("PlexampPlayer: onTrackChange callback is nil — ViewModel hasn't subscribed yet")
                     }
                 }
             } else {
-                NSLog("PlexampPlayer: parsed.ratingKey was nil despite parser said \(parsed.ratingKey ?? "nil")")
+                print("PlexampPlayer: parsed.ratingKey was nil despite parser said \(parsed.ratingKey ?? "nil")")
             }
             let nowPlaying = parsed.state == "playing"
             if lastReportedPlaying != nowPlaying, let cb = onPlaybackStateChange {

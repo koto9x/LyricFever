@@ -4,6 +4,22 @@
 <dict>
 	<key></key>
 	<string></string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- kaiosmini lyric-fetch endpoint over Tailscale (HTTP because Caddy
+		     proxy is on a separate box; Tailnet is already encrypted so HTTPS
+		     would be redundant). Specific IP exception, not a blanket allow. -->
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>100.114.244.6</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUAutomaticallyUpdate</key>

@@ -40,7 +40,7 @@ class Lyrics9xLyricProvider: LyricProvider {
     @MainActor
     func fetchNetworkLyrics(trackName: String, trackID: String, currentlyPlayingArtist: String?, currentAlbumName: String?) async throws -> NetworkFetchReturn {
         guard let artist = currentlyPlayingArtist, !artist.isEmpty else {
-            NSLog("Lyrics9x: missing artist; skipping")
+            print("Lyrics9x: missing artist; skipping")
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
         var items: [URLQueryItem] = [
@@ -58,12 +58,12 @@ class Lyrics9xLyricProvider: LyricProvider {
         guard let url = comps.url else {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
-        NSLog("Lyrics9x /api/lookup: \(url.absoluteString)")
+        print("Lyrics9x /api/lookup: \(url.absoluteString)")
         let (data, response) = try await urlSession.data(for: URLRequest(url: url))
         // 404 == not in library, not in cache, and syncedlyrics couldn't find it
         // anywhere. Let the chain fall through to LRCLIB / NetEase / Spotify.
         if let http = response as? HTTPURLResponse, http.statusCode == 404 {
-            NSLog("Lyrics9x: 404 — not found in library, cache, or any syncedlyrics provider")
+            print("Lyrics9x: 404 — not found in library, cache, or any syncedlyrics provider")
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
         let decoded = try JSONDecoder().decode(LyricsResponse.self, from: data)
@@ -71,7 +71,7 @@ class Lyrics9xLyricProvider: LyricProvider {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
         let lines = LRCLIBLyrics.decodeLyrics(input: decoded.lyrics)
-        NSLog("Lyrics9x: hit via source=\(decoded.source ?? "unknown"), \(lines.count) lines")
+        print("Lyrics9x: hit via source=\(decoded.source ?? "unknown"), \(lines.count) lines")
         return NetworkFetchReturn(lyrics: lines, colorData: nil)
     }
 

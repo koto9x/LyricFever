@@ -172,7 +172,7 @@ struct LyricFever: App {
                 }
             }
             .onChange(of: viewmodel.currentlyPlaying) { _, newValue in
-                NSLog("LyricFever Scene: onChange currentlyPlaying -> \(newValue ?? "nil")")
+                print("LyricFever Scene: onChange currentlyPlaying -> \(newValue ?? "nil")")
                 Task {
                     await viewmodel.onCurrentlyPlayingIDChange()
                 }

@@ -34,8 +34,11 @@ struct LRCLIBLyrics: Codable {
         let lines = input.components(separatedBy: "\n")
         
         for line in lines {
-            // Use regex to match the timestamp and the lyrics
-            let regex = try! NSRegularExpression(pattern: #"\[(\d{2}:\d{2}\.\d{2})\]\s*(.*)"#)
+            // Accept 1-3 decimal places on the milliseconds: LRCLIB returns
+            // `[00:00.00]` but syncedlyrics-via-Genius/Musixmatch sometimes uses
+            // `[00:00.000]`. Both are valid LRC; old `\d{2}` pattern silently
+            // dropped every line of the 3-decimal flavor.
+            let regex = try! NSRegularExpression(pattern: #"\[(\d{2}:\d{2}\.\d{1,3})\]\s*(.*)"#)
             let matches = regex.matches(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line))
             
             for match in matches {
