@@ -717,14 +717,64 @@ import MediaRemoteAdapter
             currentlyPlayingArtist = nil
             currentAlbumName = nil
         } else {
+            let nameChanged = self.currentlyPlayingName != currentlyPlayingName
             self.currentlyPlayingName = currentlyPlayingName
             currentlyPlayingArtist = (notification.userInfo?["Artist"] as? String)
             currentAlbumName = (notification.userInfo?["Album"] as? String)
             if let duration = currentPlayerInstance.duration {
                 self.duration = duration
             }
-            print("REOPEN: currentlyPlayingName is \(currentlyPlayingName)")
-            currentlyPlayingAppleMusicPersistentID = appleMusicPlayer.persistentID
+            print("REOPEN: currentlyPlayingName is \(currentlyPlayingName) (nameChanged=\(nameChanged))")
+            // Prefer the persistent-ID embedded in the notification — it changes
+            // exactly when the track changes. Fall back to reading appleMusicPlayer's
+            // AppleScript currentTrack reference, which can lag the notification by
+            // several hundred ms (Music.app keeps the old reference for a moment
+            // mid-transition). Without this fallback retry, .task(id: persistentID)
+            // doesn't fire for the new track and stale lyrics stick.
+            let notifPID = appleMusicPersistentIDFromUserInfo(notification.userInfo)
+            if let notifPID, currentlyPlayingAppleMusicPersistentID != notifPID {
+                currentlyPlayingAppleMusicPersistentID = notifPID
+            } else if nameChanged {
+                // Notification didn't carry a PersistentID we recognized but the
+                // name changed — definitely a new track. Drive a retry loop until
+                // the AppleScript persistent ID reflects it.
+                refreshApplePersistentIDUntilChanged(from: currentlyPlayingAppleMusicPersistentID, attemptsLeft: 8)
+            } else {
+                currentlyPlayingAppleMusicPersistentID = appleMusicPlayer.persistentID
+            }
+        }
+    }
+
+    /// Music.app's `com.apple.Music.playerInfo` notification sometimes
+    /// includes the new track's persistent ID directly so we don't have to
+    /// race AppleScript. Key name + value type vary across macOS versions —
+    /// accept "PersistentID", "Persistent ID", and both String and NSNumber.
+    private func appleMusicPersistentIDFromUserInfo(_ info: [AnyHashable: Any]?) -> String? {
+        guard let info else { return nil }
+        for key in ["PersistentID", "Persistent ID"] {
+            if let s = info[key] as? String, !s.isEmpty { return s }
+            if let n = info[key] as? NSNumber {
+                return String(format: "%016llX", n.uint64Value)
+            }
+        }
+        return nil
+    }
+
+    /// Polls `appleMusicPlayer.persistentID` until it differs from `from` or
+    /// the attempt budget is exhausted. Music.app generally catches up within
+    /// 200-500ms; budget of 8 × 250ms = 2s is safely beyond worst-case.
+    private func refreshApplePersistentIDUntilChanged(from oldPID: String?, attemptsLeft: Int) {
+        let fresh = appleMusicPlayer.persistentID
+        if fresh != nil, fresh != oldPID {
+            currentlyPlayingAppleMusicPersistentID = fresh
+            return
+        }
+        guard attemptsLeft > 0 else {
+            print("refreshApplePersistentIDUntilChanged: gave up; AppleScript never updated past \(oldPID ?? "nil")")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.refreshApplePersistentIDUntilChanged(from: oldPID, attemptsLeft: attemptsLeft - 1)
         }
     }
     
