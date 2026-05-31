@@ -132,9 +132,17 @@ struct LyricFever: App {
                     viewmodel.translatedLyric = []
                 }
             }
-            .onChange(of: viewmodel.currentPlayer) {
-                print("Setting hasOnboarded to false due to player change")
-                viewmodel.userDefaultStorage.hasOnboarded = false
+            .onChange(of: viewmodel.currentPlayer) { _, newPlayer in
+                // When the active player flips (now happens automatically as
+                // smart routing follows whichever app is actually playing —
+                // Plexamp → Apple Music → Spotify in priority), re-detect
+                // the current track for the new player so lyrics swap.
+                // Previously this forced hasOnboarded = false which broke the
+                // chain entirely; now we just trigger a setCurrentProperties
+                // refresh and let onCurrentlyPlayingIDChange follow if the
+                // trackID changes.
+                print("currentPlayer changed → \(newPlayer); re-detecting current track")
+                viewmodel.setCurrentPropertiesPublic()
             }
             .onChange(of: viewmodel.fullscreen) {
                 if viewmodel.fullscreen {

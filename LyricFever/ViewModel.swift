@@ -289,13 +289,31 @@ import MediaRemoteAdapter
     #if os(macOS)
     var currentPlayer: PlayerType {
         get {
-            // Plexamp gets first preference WHEN it's actually running. If `usePlexamp`
-            // is on but Plexamp isn't open, fall through to the user's Spotify/Apple
-            // Music preference so they keep getting lyrics from whatever app they
-            // actually switched to. This makes Plexamp opt-in-but-graceful instead
-            // of a hard override.
-            if self.userDefaultStorage.usePlexamp && plexampPlayer.isRunning {
-                return .plexamp
+            // Routing priority for `usePlexamp = true`:
+            //   1. Plexamp is actively playing → use Plexamp.
+            //   2. Apple Music or Spotify is actively playing → use them
+            //      (Plexamp may be running but paused in the background;
+            //       the user is clearly listening to the other app).
+            //   3. Plexamp is running (paused) → use Plexamp.
+            //   4. Fall back to the spotifyOrAppleMusic toggle.
+            //
+            // This prevents the "Plexamp paused on a Night Tapes track in
+            // the background while user listens to aespa on Apple Music"
+            // case where stale Plexamp metadata leaks into the displayed
+            // lyrics.
+            if self.userDefaultStorage.usePlexamp {
+                if plexampPlayer.isRunning && plexampPlayer.isPlaying {
+                    return .plexamp
+                }
+                if appleMusicPlayer.isPlaying {
+                    return .appleMusic
+                }
+                if spotifyPlayer.isPlaying {
+                    return .spotify
+                }
+                if plexampPlayer.isRunning {
+                    return .plexamp
+                }
             }
             if self.userDefaultStorage.spotifyOrAppleMusic {
                 return .appleMusic
@@ -881,6 +899,14 @@ import MediaRemoteAdapter
         }
     }
     
+    /// Public shim so SwiftUI scenes can ask us to re-detect the active
+    /// player's current track (used when smart-player routing flips between
+    /// Plexamp / Apple Music / Spotify based on which app is actively
+    /// playing). Forwards to the existing private `setCurrentProperties`.
+    func setCurrentPropertiesPublic() {
+        setCurrentProperties()
+    }
+
     private func setCurrentProperties() {
         switch currentPlayer {
             case .appleMusic:
