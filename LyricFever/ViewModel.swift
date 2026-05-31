@@ -899,6 +899,48 @@ import MediaRemoteAdapter
         }
     }
 
+    /// "End-of-track" enrichment preloader. Runs every 10s while a track is
+    /// playing; once `duration - currentTime <= 60s` it fires preload for the
+    /// upcoming track(s). Per-trackID guard prevents repeated firing within
+    /// the same song. Reset by setCurrentProperties on the next track change.
+    private var endOfTrackPreloadTask: Task<Void, Never>?
+    private var endOfTrackPreloadedFor: String? = nil
+
+    func startEndOfTrackPreloader() {
+        endOfTrackPreloadTask?.cancel()
+        endOfTrackPreloadTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                await MainActor.run { [weak self] in
+                    self?.checkEndOfTrackAndPreload()
+                }
+            }
+        }
+    }
+
+    func checkEndOfTrackAndPreload() {
+        guard let track = currentlyPlaying else { return }
+        guard endOfTrackPreloadedFor != track else { return }
+        guard let duration = currentPlayerInstance.duration, duration > 0 else { return }
+        guard let pos = currentPlayerInstance.currentTime else { return }
+        let remainingMs = Double(duration) - pos
+        // Fire when 60s or less remains. Don't fire on a fresh-started track
+        // (remaining ≈ duration > 60s).
+        guard remainingMs < 60_000, remainingMs > 0 else { return }
+        endOfTrackPreloadedFor = track
+        print("End-of-track preload triggered for \(track) (remaining ~\(Int(remainingMs/1000))s)")
+        // Re-run the existing Plexamp queue preload (it skips the currently-playing
+        // ratingKey itself, so all upcoming siblings — including any added since
+        // the last setCurrentProperties run — get warmed).
+        if currentPlayer == .plexamp {
+            preloadPlexampQueueLyrics(excluding: plexampPlayer.metadata?.ratingKey)
+        }
+        // Apple Music's queue API isn't reliably scriptable on modern macOS
+        // (Up Next isn't enumerable). For Apple Music we rely on per-track
+        // first-play enrichment (5-20s cold, instant cached). If the user plays
+        // through an album, by track 2 onwards the cache is already filling.
+    }
+
     func preloadPlexampQueueLyrics(excluding currentRatingKey: String?) {
         let url = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/Plexamp/PlayQueue.json")
@@ -1295,6 +1337,10 @@ import MediaRemoteAdapter
     #if os(macOS)
     func setNewLyricsColorTranslationRomanizationAndStartUpdater(with newLyrics: [LyricLine]) {
         currentlyPlayingLyrics = newLyrics
+        // Reset the end-of-track preload guard whenever a new track's lyrics
+        // load — so the upcoming-track preload fires once per track.
+        endOfTrackPreloadedFor = nil
+        startEndOfTrackPreloader()
         setBackgroundColor()
         fetchTranslationSourceLanguage()
         let _ = reloadTranslationConfigIfTranslating()
