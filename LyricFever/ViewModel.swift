@@ -209,6 +209,11 @@ import MediaRemoteAdapter
     var currentlyPlayingName: String?
     var currentlyPlayingArtist: String?
     var currentAlbumName: String?
+    // Stashes the most recent network-fetched lyrics result (including server-side
+    // romanization + translation enrichment). Lets romanizeDidChange and the
+    // translation flow short-circuit to server data when available, falling back
+    // to Mecab / Apple Translation only when the server didn't provide them.
+    var lastNetworkResult: NetworkFetchReturn? = nil
     var currentlyPlayingLyrics: [LyricLine] = []
     var currentlyPlayingLyricsIndex: Int?
     var isPlaying: Bool = false
@@ -592,6 +597,16 @@ import MediaRemoteAdapter
     
     func romanizeDidChange() {
         if userDefaultStorage.romanize {
+            // Prefer server-side romanization from Lyrics9x (pykakasi for JA,
+            // hangul-romanize for KO) — it covers Korean which Mecab can't,
+            // and is per-line aligned by timestamp at the kaiosmini side.
+            if let serverRom = lastNetworkResult?.romanization,
+               !serverRom.isEmpty,
+               serverRom.count == currentlyPlayingLyrics.count {
+                print("Romanized Lyrics from Lyrics9x server enrichment (\(serverRom.count) lines, lang=\(lastNetworkResult?.language ?? "?"))")
+                romanizedLyrics = serverRom
+                return
+            }
             // Generate romanized lyrics from chinese conversion
             if !chineseConversionLyrics.isEmpty {
                 print("Romanized Lyrics generated from romanize value change for song \(String(describing: currentlyPlaying)) with chinese conversion")
@@ -605,7 +620,7 @@ import MediaRemoteAdapter
                     RomanizerService.generateRomanizedLyric($0)
                 })
             }
-            
+
 //            romanizeMetadata()
         } else {
             romanizedLyrics = []
@@ -1030,6 +1045,9 @@ import MediaRemoteAdapter
             isFetching = true
             
             var networkLyrics: NetworkFetchReturn = await fetchAllNetworkLyrics()
+            // Stash the full result so romanizeDidChange + translation flow can
+            // read server-side enrichment when the winning provider was Lyrics9x.
+            self.lastNetworkResult = networkLyrics
             
             // verify non-stale trackID
             if initiatingTrackID != self.currentlyPlaying {
@@ -1109,6 +1127,16 @@ import MediaRemoteAdapter
     #if os(macOS)
     func reloadTranslationConfigIfTranslating() -> Bool {
         if userDefaultStorage.translate {
+            // Prefer server-side translation from Lyrics9x — already cached,
+            // batch-translated for better context, covers KO/JA/VI/ZH uniformly,
+            // and is timestamp-aligned with the original LRC.
+            if let serverTrn = lastNetworkResult?.translation,
+               !serverTrn.isEmpty,
+               serverTrn.count == currentlyPlayingLyrics.count {
+                print("Translated Lyrics from Lyrics9x server enrichment (\(serverTrn.count) lines)")
+                translatedLyric = serverTrn
+                return false  // tell caller "no Apple Translation session needed"
+            }
             if translationSessionConfig == TranslationSession.Configuration(source: translationSourceLanguage, target: userLocaleLanguage) {
                 translationSessionConfig?.invalidate()
             } else {

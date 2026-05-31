@@ -2,13 +2,12 @@
 //  Lyrics9xLyricProvider.swift
 //  Lyric Fever
 //
-//  Talks to Koto's self-hosted lyric service on kaiosmini via the Tailscale IP
-//  (bypasses the public Caddy in front of lyrics.9x.studio, which has a 30s
-//  proxy timeout that strangles cold syncedlyrics calls). The endpoint cascades:
-//    library tag-index → on-disk cache → live syncedlyrics (LRCLIB / Musixmatch /
-//    NetEase / Genius), with successful live results written back to the cache.
-//  This means niche artists not in the local Plex library are discovered + cached
-//  on first play, then served instantly forever after.
+//  Talks to kaiosmini's lyric-fetch service via Tailscale. The `/api/lookup`
+//  endpoint cascades library → on-disk cache → live syncedlyrics, and for
+//  foreign-language tracks also returns server-side romanization + English
+//  translation streams (cached as JSON alongside the raw .lrc). This provider
+//  decodes all three streams and aligns them by timestamp so the FullscreenView
+//  can render a 3-tier display (original → romanization → translation).
 //
 
 import Foundation
@@ -16,25 +15,46 @@ import Foundation
 class Lyrics9xLyricProvider: LyricProvider {
     var providerName = "Lyrics 9x Studio Provider"
 
-    // Tailscale IP for kaiosmini. Works from any device on the Tailnet (asgard16,
-    // k13, kaiosmini itself, future fleet). Bypasses the public lyrics.9x.studio
-    // Caddy front so cold syncedlyrics calls aren't proxy-timed-out at 30s.
     private static let baseURL = "http://100.114.244.6:8676"
 
     private let urlSession: URLSession = {
         let cfg = URLSessionConfiguration.default
-        // syncedlyrics cold lookups can take 10-30s (4 providers in series).
-        // Generous request timeout; resource timeout slightly higher to absorb
-        // edge cases without ever hanging Lyric Fever's UI forever.
+        // Cold lookups can take 10-30s (syncedlyrics across 4 providers + then
+        // translation via deep-translator). Generous timeouts; the chain only
+        // hits Lyrics9x first so other providers absorb the wait too.
         cfg.timeoutIntervalForRequest = 45
         cfg.timeoutIntervalForResource = 60
         cfg.httpAdditionalHeaders = ["User-Agent": "Lyric Fever (Plexamp integration) — koto9x"]
         return URLSession(configuration: cfg)
     }()
 
-    private struct LyricsResponse: Decodable {
+    private struct LookupResponse: Decodable {
         let lyrics: String
+        let romanization: String?
+        let translation: String?
+        let language: String?
         let source: String?
+    }
+
+    /// Parse a server-returned LRC stream into a timestamp→text map keyed by
+    /// the original startTime (in ms, matching `LyricLine.startTime`). Used
+    /// for safe per-line alignment when the server returns fewer lines than
+    /// the main lyrics stream (e.g. metadata-only lines may be skipped).
+    private static func indexLRCByTimestamp(_ lrcText: String) -> [Double: String] {
+        var map: [Double: String] = [:]
+        let regex = try! NSRegularExpression(pattern: #"\[(\d{2}:\d{2}\.\d{1,3})\]\s*(.*)"#)
+        for raw in lrcText.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            let matches = regex.matches(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line))
+            for m in matches {
+                if let tsRange = Range(m.range(at: 1), in: line),
+                   let txtRange = Range(m.range(at: 2), in: line) {
+                    let startTime = String(line[tsRange]).convertToTimeInterval()
+                    map[startTime] = String(line[txtRange])
+                }
+            }
+        }
+        return map
     }
 
     @MainActor
@@ -60,26 +80,43 @@ class Lyrics9xLyricProvider: LyricProvider {
         }
         print("Lyrics9x /api/lookup: \(url.absoluteString)")
         let (data, response) = try await urlSession.data(for: URLRequest(url: url))
-        // 404 == not in library, not in cache, and syncedlyrics couldn't find it
-        // anywhere. Let the chain fall through to LRCLIB / NetEase / Spotify.
         if let http = response as? HTTPURLResponse, http.statusCode == 404 {
-            print("Lyrics9x: 404 — not found in library, cache, or any syncedlyrics provider")
+            print("Lyrics9x: 404 — not in library, cache, or any syncedlyrics provider")
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
-        let decoded = try JSONDecoder().decode(LyricsResponse.self, from: data)
+        let decoded = try JSONDecoder().decode(LookupResponse.self, from: data)
         if decoded.lyrics.isEmpty {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
         let lines = LRCLIBLyrics.decodeLyrics(input: decoded.lyrics)
-        print("Lyrics9x: hit via source=\(decoded.source ?? "unknown"), \(lines.count) lines")
-        return NetworkFetchReturn(lyrics: lines, colorData: nil)
+
+        // Build per-line aligned romanization + translation arrays. Server
+        // streams use the same timestamps as the original so we can look up
+        // each line by startTime; missing entries fall back to empty so the
+        // FullscreenView can skip rendering that tier for that line.
+        var romanArr: [String]? = nil
+        var translateArr: [String]? = nil
+        if let rom = decoded.romanization, !rom.isEmpty {
+            let map = Self.indexLRCByTimestamp(rom)
+            romanArr = lines.map { map[$0.startTimeMS] ?? "" }
+        }
+        if let trn = decoded.translation, !trn.isEmpty {
+            let map = Self.indexLRCByTimestamp(trn)
+            translateArr = lines.map { map[$0.startTimeMS] ?? "" }
+        }
+
+        print("Lyrics9x: hit via source=\(decoded.source ?? "unknown") language=\(decoded.language ?? "unknown") lines=\(lines.count) rom=\(romanArr?.count ?? 0) trn=\(translateArr?.count ?? 0)")
+        return NetworkFetchReturn(
+            lyrics: lines,
+            colorData: nil,
+            romanization: romanArr,
+            translation: translateArr,
+            language: decoded.language
+        )
     }
 
     @MainActor
     func search(trackName: String, artistName: String) async throws -> [SongResult] {
-        // No mass-search endpoint exposed; lyric-fetch dashboard does fuzzy matching
-        // in JS but isn't published as JSON. This provider only powers the direct
-        // now-playing lookup. Mass-search falls back through the rest of the chain.
         return []
     }
 }

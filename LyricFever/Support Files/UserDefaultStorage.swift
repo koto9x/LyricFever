@@ -14,7 +14,7 @@ import ObservableUserDefault
 //@ObservableDefaults
 @Observable
 class UserDefaultStorage {
-    @ObservableUserDefault(.init(key: "translate", defaultValue: false, store: .standard))
+    @ObservableUserDefault(.init(key: "translate", defaultValue: true, store: .standard))
     @ObservationIgnored var translate: Bool
     @ObservableUserDefault(.init(key: "translationTargetLanguage", store: .standard))
     @ObservationIgnored var translationTargetLanguage: Locale.Language?
@@ -34,7 +34,7 @@ class UserDefaultStorage {
     @ObservableUserDefault(.init(key: "useWindowedFullscreen", defaultValue: true, store: .standard))
     @ObservationIgnored var useWindowedFullscreen: Bool
     #endif
-    @ObservableUserDefault(.init(key: "romanize", defaultValue: false, store: .standard))
+    @ObservableUserDefault(.init(key: "romanize", defaultValue: true, store: .standard))
     @ObservationIgnored var romanize: Bool
     @ObservableUserDefault(.init(key: "romanizeMetadata", defaultValue: true, store: .standard))
     @ObservationIgnored var romanizeMetadata: Bool
