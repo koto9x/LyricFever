@@ -1007,7 +1007,13 @@ import MediaRemoteAdapter
     func fetchLyrics(for trackID: String, _ trackName: String, checkCoreDataFirst: Bool) async throws -> [LyricLine] {
         let initiatingTrackID = trackID
         
-        if checkCoreDataFirst, let lyrics = fetchFromCoreData(for: trackID) {
+        // Self-heal: treat an empty CoreData entry as a miss so we retry the
+        // network chain (now with Lyrics9x first → kaiosmini's lookup cascade,
+        // which can rescue tracks that earlier providers had no lyrics for, like
+        // niche artists added since the last attempt). lyric-fetch caches its own
+        // 404s server-side so genuinely-empty tracks still resolve in <500ms on
+        // subsequent retries.
+        if checkCoreDataFirst, let lyrics = fetchFromCoreData(for: trackID), !lyrics.isEmpty {
             print("ViewModel FetchLyrics: got lyrics from core data :D \(trackID) \(trackName)")
             try Task.checkCancellation()
             amplitude.track(eventType: "CoreData Fetch")
@@ -1018,6 +1024,7 @@ import MediaRemoteAdapter
             }
             return lyrics
         } else {
+            NSLog("ViewModel FetchLyrics: empty/missing CoreData entry for \(trackID) — falling through to network (self-heal)")
             print("ViewModel FetchLyrics: no lyrics from core data, going to download from internet \(trackID) \(trackName)")
             print("ViewModel FetchLyrics: isFetching set to true")
             isFetching = true
