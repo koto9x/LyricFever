@@ -868,6 +868,62 @@ import MediaRemoteAdapter
                 self.duration = duration
                 self.currentAlbumName = plexampPlayer.albumName
                 self.currentTime = CurrentTimeWithStoredDate(currentTime: 0)
+                // Background-preload every OTHER track in the active play queue so
+                // when the user hits next, the lyrics are already enriched + cached
+                // on kaiosmini. Cheap: each call returns <500ms from cache after
+                // the first lookup ever per track.
+                preloadPlexampQueueLyrics(excluding: plexampPlayer.metadata?.ratingKey)
+        }
+    }
+
+    /// For each sibling track in Plexamp's active PlayQueue (artist+title in
+    /// the on-disk PlayQueue.json), fire a non-blocking /api/lookup so the
+    /// kaiosmini enrichment + cache is warm by the time the user navigates to
+    /// each one. Skips the currently-playing ratingKey. Best-effort; failures
+    /// are silent.
+    func preloadPlexampQueueLyrics(excluding currentRatingKey: String?) {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/Plexamp/PlayQueue.json")
+        guard let data = try? Data(contentsOf: url),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = root["data"] as? [String: Any],
+              let container = payload["MediaContainer"] as? [String: Any],
+              let items = container["Metadata"] as? [[String: Any]] else { return }
+
+        struct Sibling { let key: String; let title: String; let artist: String; let album: String? }
+        var siblings: [Sibling] = []
+        for item in items {
+            let k: String? = {
+                if let s = item["ratingKey"] as? String { return s }
+                if let n = item["ratingKey"] as? NSNumber { return n.stringValue }
+                return nil
+            }()
+            guard let k, k != currentRatingKey,
+                  let title = item["title"] as? String,
+                  let artist = item["grandparentTitle"] as? String,
+                  !title.isEmpty, !artist.isEmpty else { continue }
+            let album = item["parentTitle"] as? String
+            siblings.append(Sibling(key: k, title: title, artist: artist, album: album))
+        }
+        guard !siblings.isEmpty else { return }
+        print("preloadPlexampQueueLyrics: warming \(siblings.count) sibling track(s)")
+        Task.detached(priority: .utility) {
+            let session = URLSession(configuration: .default)
+            for sib in siblings {
+                var items: [URLQueryItem] = [
+                    URLQueryItem(name: "artist_name", value: sib.artist),
+                    URLQueryItem(name: "track_name", value: sib.title),
+                ]
+                if let album = sib.album, !album.isEmpty {
+                    items.append(URLQueryItem(name: "album_name", value: album))
+                }
+                var comps = URLComponents(string: "http://100.114.244.6:8676")!
+                comps.path = "/api/lookup"
+                comps.queryItems = items
+                guard let url = comps.url else { continue }
+                _ = try? await session.data(for: URLRequest(url: url))
+            }
+            print("preloadPlexampQueueLyrics: done warming")
         }
     }
     
