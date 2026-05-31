@@ -217,6 +217,12 @@ struct FullscreenView: View {
                     .font(.title2)
             }
             .frame(height: 35)
+            // Scrubber between artist line and play/volume controls. Drag to seek.
+            ScrubBar()
+                .environment(viewmodel)
+                .frame(maxWidth: 320)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
             FullscreenButtons()
             .frame(height: 25)
             .buttonStyle(.plain)
@@ -266,7 +272,8 @@ struct FullscreenView: View {
                 chineseConversionLyrics: viewmodel.chineseConversionLyrics,
                 translatedLyric:         viewmodel.translatedLyric,
                 blurFullscreen:          viewmodel.userDefaultStorage.blurFullscreen,
-                padding:                 padding
+                padding:                 padding,
+                scrollResyncSignal:      viewmodel.scrollResyncSignal
             )
             .mask(
                 LinearGradient(
@@ -282,8 +289,37 @@ struct FullscreenView: View {
                 ProgressView()
                     .transition(.opacity)
             }
+            // "Snap to now" floating button — surfaces when the user has
+            // manually scrolled away from the auto-synced position. Tapping
+            // bumps the resync signal which the NSViewRepresentable picks up
+            // and animates the scroll view back to the current line.
+            #if os(macOS)
+            if viewmodel.userScrolledOffSync {
+                VStack {
+                    Spacer()
+                    Button {
+                        viewmodel.scrollResyncSignal += 1
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle.fill")
+                            Text("Snap to current")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.15), lineWidth: 1))
+                        .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 28)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            #endif
         }
         .animation(.easeOut(duration: 0.6), value: lyricsEmpty)
+        .animation(.easeInOut(duration: 0.3), value: viewmodel.userScrolledOffSync)
     }
 
     var body: some View {

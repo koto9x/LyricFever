@@ -137,7 +137,7 @@ class LyricCellView: NSView {
     }
 
     func configure(primaryText: String, romanizationText: String?, translationText: String?,
-                   isCurrentLine: Bool, isLastLine: Bool, isPastLine: Bool,
+                   isCurrentLine: Bool, isLastLine: Bool, isPastLine: Bool, distance: Int = 0,
                    blurRadius: CGFloat, animationDelay: Double = 0,
                    skipAnimations: Bool = false) {
         primaryLabel.stringValue = primaryText
@@ -154,10 +154,31 @@ class LyricCellView: NSView {
             translationLabel.isHidden = true
         }
 
-        // More contrast between the focused line and surrounding context. Current
-        // line stays at full opacity, others fade to 0.22 (was 0.35) so the user
-        // can see at a glance which line is "now".
-        let targetAlpha: CGFloat = (isLastLine || isPastLine) ? 0 : (isCurrentLine ? 1.0 : 0.22)
+        // Multi-tier fade so context lines stay readable but de-emphasized.
+        //   current line  → 1.0
+        //   future lines  → 0.22
+        //   past lines    → graceful ghosting based on how far back they are
+        //                   (0.55 at -1, 0.28 at -2, 0.14 at -3, 0.06 at -4,
+        //                    fade out by -5+). Keeps a few lines of "what just
+        //                    happened" visible above the now-line so the user
+        //                    can scroll-back or click-seek with context.
+        // `isLastLine` (the "Now Playing: X" sentinel appended by processed())
+        // still gets fully hidden.
+        let targetAlpha: CGFloat = {
+            if isLastLine { return 0 }
+            if isCurrentLine { return 1.0 }
+            if isPastLine {
+                let d = max(1, distance)
+                switch d {
+                case 1: return 0.55
+                case 2: return 0.28
+                case 3: return 0.14
+                case 4: return 0.06
+                default: return 0
+                }
+            }
+            return 0.22
+        }()
         let focusChanged = isCurrentLine != lastIsCurrentLine
         lastIsCurrentLine = isCurrentLine
 
@@ -279,10 +300,18 @@ class LyricsDocumentView: NSView {
     }
 }
 
-// MARK: - Non-scrollable scroll view
-
+// MARK: - Smart scroll view
+// User scroll is now allowed (forwarded to super). When the user manually
+// scrolls, the coordinator marks the viewmodel as "off-sync" so the
+// FullscreenView overlay can surface a "snap to now" button. Programmatic
+// scrolls (autoscroll to current line) are gated by the coordinator's
+// `programmaticScrolling` flag to avoid self-triggering the off-sync state.
 class NonScrollableScrollView: NSScrollView {
-    override func scrollWheel(with event: NSEvent) { /* user scrolling disabled */ }
+    weak var smartCoordinator: LyricsNSScrollView.Coordinator?
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        smartCoordinator?.userDidScroll()
+    }
 }
 
 // MARK: - NSViewRepresentable
@@ -296,6 +325,10 @@ struct LyricsNSScrollView: NSViewRepresentable {
     let translatedLyric:         [String]
     let blurFullscreen:          Bool
     let padding:                 CGFloat
+    // Bumped by FullscreenView's "snap to now" button — when this changes,
+    // updateNSView re-anchors scroll to the current line and clears the
+    // viewmodel's `userScrolledOffSync` flag.
+    let scrollResyncSignal:      Int
 
     // MARK: Coordinator
 
@@ -314,6 +347,24 @@ struct LyricsNSScrollView: NSViewRepresentable {
         var prevPadding:           CGFloat      = 0
         /// Set when lyrics change so only the first async fires the pre-position logic.
         var pendingPrePosition:    Bool         = false
+        /// True while we're driving scroll programmatically (auto-scroll, snap-to-now).
+        /// scrollWheel(events) that arrive while this is true don't flip the
+        /// off-sync flag (otherwise our own auto-scroll would trip the override).
+        var programmaticScrolling: Bool         = false
+        /// Last seen scroll-resync signal so we can detect FullscreenView's button taps.
+        var prevScrollResyncSignal: Int          = 0
+
+        /// Called from NonScrollableScrollView's overridden scrollWheel(_:).
+        /// If the scroll wasn't programmatic, mark the viewmodel as off-sync
+        /// so the FullscreenView surfaces the snap-to-now button.
+        func userDidScroll() {
+            guard !programmaticScrolling else { return }
+            Task { @MainActor in
+                if !ViewModel.shared.userScrolledOffSync {
+                    ViewModel.shared.userScrolledOffSync = true
+                }
+            }
+        }
 
         /// Sync the document view's frame to match the clip view's current width
         /// and the computed content height.  Call this any time lyrics or clip
@@ -346,6 +397,7 @@ struct LyricsNSScrollView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NonScrollableScrollView {
         let scrollView = NonScrollableScrollView()
+        scrollView.smartCoordinator = context.coordinator
         scrollView.hasVerticalScroller   = false
         scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground       = false
@@ -425,11 +477,24 @@ struct LyricsNSScrollView: NSViewRepresentable {
             scrollToCenter(coordinator: c, index: idx, animated: false)
         }
 
-        // Scroll after layout has settled.
+        // Smart scroll: if the FullscreenView's "snap to now" button was
+        // tapped (scrollResyncSignal incremented), force a one-shot resync
+        // even when the user is in off-sync mode, then clear the flag.
+        let resyncRequested = scrollResyncSignal != c.prevScrollResyncSignal
+        c.prevScrollResyncSignal = scrollResyncSignal
+        if resyncRequested, let idx = currentIndex {
+            scrollToCenter(coordinator: c, index: idx, animated: true)
+            Task { @MainActor in ViewModel.shared.userScrolledOffSync = false }
+            return
+        }
+
+        // Scroll after layout has settled. Skip auto-scroll while the user is
+        // overriding (scrolled off-sync) — they want to read past lyrics.
+        let userOverride = ViewModel.shared.userScrolledOffSync
         let targetIndex = currentIndex
         DispatchQueue.main.async { [c] in
             c.syncDocumentFrame()   // re-check now that real dimensions are known
-            if let idx = targetIndex {
+            if let idx = targetIndex, !userOverride {
                 // A lyric is active — clear any pending pre-position and scroll to it.
                 c.pendingPrePosition = false
                 self.scrollToCenter(coordinator: c, index: idx, animated: true)
@@ -537,6 +602,7 @@ struct LyricsNSScrollView: NSViewRepresentable {
                 isCurrentLine:    (i == currentIndex),
                 isLastLine:       (i == count - 1),
                 isPastLine:       isPastLine,
+                distance:         distance,
                 blurRadius:       blurFullscreen ? (currentIndex == nil ? 6.0 : min(CGFloat(distance) * 1.5, 6.0)) : 0.0,
                 animationDelay:   animDelay,
                 skipAnimations:   !animated)
@@ -549,6 +615,15 @@ struct LyricsNSScrollView: NSViewRepresentable {
         let dv = coordinator.documentView!
         let sv = coordinator.scrollView!
         guard index < dv.lyricViews.count else { return }
+
+        // Mark this scroll as programmatic so the scrollWheel observer doesn't
+        // flip the viewmodel into off-sync mode while we move the clip view
+        // ourselves. Clear after a generous window (the animated scroll +
+        // any momentum scrolling that arrives slightly after).
+        coordinator.programmaticScrolling = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            coordinator.programmaticScrolling = false
+        }
 
         dv.layoutSubtreeIfNeeded()
 

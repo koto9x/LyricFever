@@ -214,6 +214,15 @@ import MediaRemoteAdapter
     // translation flow short-circuit to server data when available, falling back
     // to Mecab / Apple Translation only when the server didn't provide them.
     var lastNetworkResult: NetworkFetchReturn? = nil
+
+    // Smart-scroll state. The fullscreen lyric view auto-scrolls to the current
+    // line; the moment the user touches their trackpad/scrollwheel, we set
+    // `userScrolledOffSync = true`, freeze the auto-scroll, and the fullscreen
+    // overlay surfaces a "snap to now" button that bumps `scrollResyncSignal`
+    // and clears the flag — coordinator picks up the signal change and
+    // animates back to the current line.
+    var userScrolledOffSync: Bool = false
+    var scrollResyncSignal: Int = 0
     var currentlyPlayingLyrics: [LyricLine] = []
     var currentlyPlayingLyricsIndex: Int?
     var isPlaying: Bool = false
