@@ -275,8 +275,12 @@ import MediaRemoteAdapter
     #if os(macOS)
     var currentPlayer: PlayerType {
         get {
-            // Plexamp overrides the Spotify/Apple Music toggle when explicitly enabled.
-            if self.userDefaultStorage.usePlexamp {
+            // Plexamp gets first preference WHEN it's actually running. If `usePlexamp`
+            // is on but Plexamp isn't open, fall through to the user's Spotify/Apple
+            // Music preference so they keep getting lyrics from whatever app they
+            // actually switched to. This makes Plexamp opt-in-but-graceful instead
+            // of a hard override.
+            if self.userDefaultStorage.usePlexamp && plexampPlayer.isRunning {
                 return .plexamp
             }
             if self.userDefaultStorage.spotifyOrAppleMusic {
@@ -317,16 +321,18 @@ import MediaRemoteAdapter
     #if os(macOS)
     var localFileUploadProvider = LocalFileUploadProvider()
     #endif
-    // When the user is on Plexamp, try the self-hosted lyrics.9x.studio first; fall back
-    // through the existing chain on a 404 / empty response. Other players keep the
-    // pre-existing ordering.
+    // Lyrics9x (kaiosmini's self-hosted /api/lookup) is always first regardless of
+    // player — it cascades library → cache → syncedlyrics (LRCLIB / Musixmatch /
+    // NetEase / Genius) and writes back to cache, so it acts both as the user's
+    // private lyric library AND as a discovery layer for niche artists not in
+    // any of the public providers' indexes. Spotify/LRCLIB/NetEase are kept as
+    // outright fallbacks for the rare case Lyrics9x can't reach kaiosmini.
     var allNetworkLyricProviders: [LyricProvider] {
         #if os(macOS)
-        if currentPlayer == .plexamp {
-            return [lyrics9xLyricProvider, lRCLyricProvider, spotifyLyricProvider, netEaseLyricProvider]
-        }
-        #endif
+        return [lyrics9xLyricProvider, spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
+        #else
         return [spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
+        #endif
     }
 
     // custom order because LRCLIB is tweaking for the time being
