@@ -881,6 +881,24 @@ import MediaRemoteAdapter
     /// kaiosmini enrichment + cache is warm by the time the user navigates to
     /// each one. Skips the currently-playing ratingKey. Best-effort; failures
     /// are silent.
+    /// Jump playback to the start of a specific lyric line. Routes to
+    /// whatever currentPlayer is active (Apple Music / Spotify via
+    /// ScriptingBridge, Plexamp via HTTP control API). Also moves our local
+    /// lyric-index pointer so highlight + scroll catch up immediately
+    /// instead of waiting for the next playback-position poll cycle.
+    func seekToLyricLine(at index: Int) {
+        guard index >= 0, index < currentlyPlayingLyrics.count else { return }
+        let line = currentlyPlayingLyrics[index]
+        let ms = Int(line.startTimeMS)
+        currentPlayerInstance.seek(toMillis: ms)
+        currentlyPlayingLyricsIndex = index
+        // Re-anchor currentTime so the lyric-updater task computes the right delta.
+        currentTime = CurrentTimeWithStoredDate(currentTime: Double(ms))
+        if !isPlaying {
+            currentPlayerInstance.togglePlayback()
+        }
+    }
+
     func preloadPlexampQueueLyrics(excluding currentRatingKey: String?) {
         let url = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/Plexamp/PlayQueue.json")

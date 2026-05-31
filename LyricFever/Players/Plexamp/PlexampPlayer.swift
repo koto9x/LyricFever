@@ -152,6 +152,18 @@ class PlexampPlayer: Player {
         Task { await sendPlayerCommand("playback/skipNext") }
     }
 
+    func seek(toMillis millis: Int) {
+        // Plex's seekTo offset is in milliseconds.
+        Task { await sendPlayerCommand("playback/seekTo", query: ["offset": "\(max(0, millis))"]) }
+        // Optimistically nudge our cached timeline so the highlight jumps
+        // immediately instead of waiting for the next 1s poll.
+        if var t = timeline {
+            t = PlexampTimelineSnapshot(state: t.state, timeMs: millis, durationMs: t.durationMs, ratingKey: t.ratingKey, volume: t.volume, machineIdentifier: t.machineIdentifier)
+            timeline = t
+            lastPollDate = Date()
+        }
+    }
+
     // MARK: Player protocol — artwork
 
     @MainActor

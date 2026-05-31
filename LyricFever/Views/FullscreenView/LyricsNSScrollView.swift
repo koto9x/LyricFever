@@ -15,7 +15,14 @@ import SwiftUI
 
 private let primaryFont       = NSFont.boldSystemFont(ofSize: 40)
 private let romanizationFont  = NSFont.systemFont(ofSize: 28, weight: .regular)
-private let translationFont   = NSFont.systemFont(ofSize: 33, weight: .semibold)
+// Translation is italic + slightly smaller than the original so the three
+// tiers read as distinct registers (bold main → regular pronunciation →
+// italic meaning).
+private let translationFont: NSFont = {
+    let base = NSFont.systemFont(ofSize: 30, weight: .regular)
+    let desc = base.fontDescriptor.withSymbolicTraits(.italic)
+    return NSFont(descriptor: desc, size: 30) ?? base
+}()
 private let cellPad:     CGFloat = 20
 private let labelGap:    CGFloat = 3
 private let trailInset:  CGFloat = 100
@@ -59,7 +66,27 @@ class LyricCellView: NSView {
     private var lastIsCurrentLine: Bool = false
     private var lastBlurRadius:    CGFloat = 0.0
 
+    /// Index into ViewModel.shared.currentlyPlayingLyrics. Set by refreshCells
+    /// so a mouseDown on the cell can ask the player to seek to that line's
+    /// startTimeMS. -1 disables click-to-seek for that cell (e.g. the
+    /// trailing "Now Playing" sentinel).
+    var lineIndex: Int = -1
+
     override var isFlipped: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard lineIndex >= 0 else { return super.mouseDown(with: event) }
+        Task { @MainActor in
+            ViewModel.shared.seekToLyricLine(at: lineIndex)
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if lineIndex >= 0 {
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -79,9 +106,9 @@ class LyricCellView: NSView {
         }
         primaryLabel.font       = primaryFont
         romanizationLabel.font  = romanizationFont
-        romanizationLabel.alphaValue = 0.70
+        romanizationLabel.alphaValue = 0.65
         translationLabel.font   = translationFont
-        translationLabel.alphaValue = 0.85
+        translationLabel.alphaValue = 0.78
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -127,7 +154,10 @@ class LyricCellView: NSView {
             translationLabel.isHidden = true
         }
 
-        let targetAlpha: CGFloat = (isLastLine || isPastLine) ? 0 : (isCurrentLine ? 1.0 : 0.35)
+        // More contrast between the focused line and surrounding context. Current
+        // line stays at full opacity, others fade to 0.22 (was 0.35) so the user
+        // can see at a glance which line is "now".
+        let targetAlpha: CGFloat = (isLastLine || isPastLine) ? 0 : (isCurrentLine ? 1.0 : 0.22)
         let focusChanged = isCurrentLine != lastIsCurrentLine
         lastIsCurrentLine = isCurrentLine
 
@@ -462,6 +492,12 @@ struct LyricsNSScrollView: NSViewRepresentable {
         for (i, view) in coordinator.documentView.lyricViews.enumerated() {
             guard i < count else { break }
             let element = lyrics[i]
+            // Tag the cell so its mouseDown handler knows which line to seek to.
+            // The trailing "Now Playing: X" sentinel line (added by
+            // NetworkFetchReturn.processed) shouldn't be clickable.
+            let isSentinelLine = i == count - 1 && element.words.hasPrefix("Now Playing: ")
+            view.lineIndex = isSentinelLine ? -1 : i
+            view.window?.invalidateCursorRects(for: view)
 
             // 3-tier display:
             //   primary       = original line (always)

@@ -34,6 +34,9 @@ protocol Player {
     func togglePlayback()
     func rewind()
     func forward()
+    // Absolute seek. Best-effort (Player.protocol-default no-op when the
+    // platform doesn't expose a precise seek API; each player overrides).
+    func seek(toMillis millis: Int)
     
     // fullscreen album art
     @MainActor
@@ -46,6 +49,9 @@ protocol Player {
 }
 
 extension Player {
+    // Default no-op so existing players don't have to implement immediately.
+    func seek(toMillis millis: Int) {}
+
     var durationAsTimeInterval: TimeInterval? {
         if let duration {
             return TimeInterval(duration*1000)

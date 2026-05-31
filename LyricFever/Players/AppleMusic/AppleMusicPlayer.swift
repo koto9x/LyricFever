@@ -93,6 +93,10 @@ class AppleMusicPlayer: Player {
     func forward() {
         appleMusicScript?.nextTrack?()
     }
+    func seek(toMillis millis: Int) {
+        // Music.app's playerPosition is a Double in seconds.
+        appleMusicScript?.setPlayerPosition?(Double(millis) / 1000.0)
+    }
     
     var artworkImage: NSImage?
     
