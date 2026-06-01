@@ -20,6 +20,10 @@ extension SongObject {
     @NSManaged public var id: String
     @NSManaged public var title: String
     @NSManaged public var language: String
+    @NSManaged public var appleMusicID: String?
+    @NSManaged public var albumID: String?
+    @NSManaged public var sourceProvider: String?
+    @NSManaged public var userPicked: Bool
     @NSManaged public var lyricsWords: [String]
     @NSManaged public var lyricsTimestamps: [TimeInterval]
 
