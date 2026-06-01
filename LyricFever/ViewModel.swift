@@ -24,7 +24,8 @@ import MediaRemoteAdapter
     static let shared = ViewModel()
     
     // Apple Music Tahoe broken AppleScript workaround
-    let musicController = MediaController(bundleIdentifier: "com.apple.Music")
+    // bundleIdentifier param removed from MediaController.init in adapter b8ce5d1
+    let musicController = MediaController()
 //    var appleMusicUniqueIdentifier: String?
 
     var currentlyPlaying: String?
@@ -115,6 +116,10 @@ import MediaRemoteAdapter
                     if let freshPID, freshPID != self.currentlyPlayingAppleMusicPersistentID {
                         self.currentlyPlayingAppleMusicPersistentID = freshPID
                     }
+                    // Capture Apple Music catalog (Adam) IDs from MediaRemote payload.
+                    // Nil for local files, audiobooks, or non-catalog tracks.
+                    self.appleMusicPlayer.lastObservedCatalogID = payload.contentItemIdentifier
+                    self.appleMusicPlayer.lastObservedAlbumCatalogID = payload.albumiTunesStoreAdamIdentifier
                     Task {
                         await self.appleMusicStarter()
                     }

@@ -674,10 +674,10 @@
 		};
 		8F2922BE2E94DE0700B286FC /* XCRemoteSwiftPackageReference "mediaremote-adapter" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ejbills/mediaremote-adapter";
+			repositoryURL = "https://github.com/koto9x/mediaremote-adapter";
 			requirement = {
 				kind = revision;
-				revision = 62a39cf1618a802340ef5267da72d3e3c7871994;
+				revision = 682582165dbf60294604a5ee66e1826b18d4f250;
 			};
 		};
 		8F37323B2E6EC9C90075CDA7 /* XCRemoteSwiftPackageReference "SwiftyOpenCC" */ = {
