@@ -353,15 +353,23 @@ import MediaRemoteAdapter
     #if os(macOS)
     var localFileUploadProvider = LocalFileUploadProvider()
     #endif
-    // Lyrics9x (kaiosmini's self-hosted /api/lookup) is always first regardless of
-    // player — it cascades library → cache → syncedlyrics (LRCLIB / Musixmatch /
-    // NetEase / Genius) and writes back to cache, so it acts both as the user's
-    // private lyric library AND as a discovery layer for niche artists not in
-    // any of the public providers' indexes. Spotify/LRCLIB/NetEase are kept as
-    // outright fallbacks for the rare case Lyrics9x can't reach kaiosmini.
+    // Per-player chain ordering:
+    //   .plexamp     → Lyrics9x first (user's self-hosted .lrc library wins;
+    //                  syncedlyrics fallback already covers niche artists)
+    //   .appleMusic  → Spotify first (its synced lyrics match Apple Music's
+    //   .spotify       sync timing well for major-label tracks — same source
+    //                  fingerprint for K-pop, J-pop, English pop). Lyrics9x's
+    //                  syncedlyrics cascade is a 2nd-choice for what Spotify
+    //                  doesn't have. The background `fetchEnrichmentOnly`
+    //                  Task still fires regardless, so romanization +
+    //                  translation come from Lyrics9x on top of Spotify
+    //                  base lyrics.
     var allNetworkLyricProviders: [LyricProvider] {
         #if os(macOS)
-        return [lyrics9xLyricProvider, spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
+        if currentPlayer == .plexamp {
+            return [lyrics9xLyricProvider, spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
+        }
+        return [spotifyLyricProvider, lyrics9xLyricProvider, lRCLyricProvider, netEaseLyricProvider]
         #else
         return [spotifyLyricProvider, lRCLyricProvider, netEaseLyricProvider]
         #endif
