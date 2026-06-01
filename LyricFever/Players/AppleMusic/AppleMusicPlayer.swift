@@ -121,4 +121,22 @@ class AppleMusicPlayer: Player {
         appleMusicScript?.activate()
     }
     var currentHoverItem: MenubarButtonHighlight = .activateAppleMusic
+
+    /// Best-effort enumeration of the next N tracks in Music.app's current playlist
+    /// queue. Returns Apple Music catalog IDs only (skips local-library / non-catalog
+    /// tracks). Returns nil if Music.app isn't running, the queue is empty, or no
+    /// catalog IDs are obtainable from AppleScript (the common v1 case).
+    func upcomingQueueCatalogIDs(limit: Int) -> [String]? {
+        // Music.app's AppleScript dictionary doesn't expose per-track Adam IDs
+        // for catalog tracks. The catalog ID flows in only via MediaRemote, which
+        // we only get for the CURRENTLY playing track — not upcoming ones.
+        //
+        // For v1, return nil (no-op). The warmAlbum path covers the common case
+        // (sequential album playback). A future extension could:
+        //  1) Read the current playlist's tracks via SBElementArray
+        //  2) For each upcoming track, attempt to map its persistentID/databaseID
+        //     to a catalog Adam ID via MusicKit's MusicLibraryRequest
+        //  3) Filter to only those that successfully resolve
+        return nil
+    }
 }

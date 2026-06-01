@@ -145,6 +145,7 @@ import MediaRemoteAdapter
                         Task.detached { [weak self] in
                             guard let self else { return }
                             await self.appleMusicPrefetcher.warmAlbum(albumID: albumID)
+                            await self.appleMusicPrefetcher.warmQueueWindow(5, appleMusicPlayer: self.appleMusicPlayer)
                         }
                     }
                 }

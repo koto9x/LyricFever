@@ -135,3 +135,61 @@ actor AppleMusicPrefetcher {
         try? ctx.save()
     }
 }
+
+// MARK: - Queue-window prefetch (best-effort)
+
+extension AppleMusicPrefetcher {
+    /// Best-effort: enumerate the next N tracks in Music.app's current play
+    /// queue and warm their lyrics. Music.app's AppleScript queue surface is
+    /// limited — if enumeration fails, silently degrades to no-op.
+    func warmQueueWindow(_ n: Int = 5, appleMusicPlayer: AppleMusicPlayer) async {
+        guard await AppleMusicAuthManager.shared.isAuthorized else { return }
+
+        let queueIDs = await enumerateNextQueueCatalogIDs(n: n, player: appleMusicPlayer)
+        guard !queueIDs.isEmpty else { return }
+
+        let alreadyCached = await cachedAppleMusicIDs(in: queueIDs)
+        let toFetch = queueIDs.filter { !alreadyCached.contains($0) }
+        guard !toFetch.isEmpty else { return }
+
+        print("AppleMusicPrefetcher.warmQueueWindow: warming \(toFetch.count) queue tracks")
+
+        await withTaskGroup(of: Void.self) { group in
+            for id in toFetch {
+                group.addTask { [provider] in
+                    let result = try? await provider.fetchNetworkLyrics(
+                        trackName: "",
+                        trackID: id,
+                        currentlyPlayingArtist: nil,
+                        currentAlbumName: nil
+                    )
+                    // Minimal persist — we don't have rich metadata until the track plays
+                    // and MediaRemote enriches the payload. So write a placeholder cache
+                    // entry that demand-fetch on next play will upgrade later.
+                    await self.persistMinimal(result: result, catalogID: id)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func enumerateNextQueueCatalogIDs(n: Int, player: AppleMusicPlayer) -> [String] {
+        // Music.app's AppleScript queue API is intentionally limited.
+        // The fork's AppleMusicPlayer doesn't expose a per-track Adam ID directly
+        // (catalog IDs come from MediaRemote, not AppleScript). For v1, we accept
+        // that warmQueueWindow may return [] often — the warmAlbum path covers
+        // the common case (sequential album playback).
+        return player.upcomingQueueCatalogIDs(limit: n) ?? []
+    }
+
+    @MainActor
+    private func persistMinimal(result: NetworkFetchReturn?, catalogID: String) {
+        let ctx = container.viewContext
+        let lines = result?.lyrics ?? []
+        let song = SongObject(from: lines, with: ctx, trackID: catalogID, trackName: "(prefetched)")
+        song.appleMusicID = catalogID
+        song.sourceProvider = lines.isEmpty ? "none_found" : "apple_music"
+        song.userPicked = false
+        try? ctx.save()
+    }
+}
