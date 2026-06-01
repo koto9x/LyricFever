@@ -282,9 +282,18 @@ class PlexampPlayer: Player {
     }
 
     private static func readPlayQueueMetadata(forRatingKey key: String) -> PlexampMetadata? {
-        let url = URL(fileURLWithPath: NSHomeDirectory())
+        // Sandboxed apps: NSHomeDirectory() returns the container's fake home, not
+        // the real user home where Plexamp writes PlayQueue.json. getpwuid(getuid())
+        // gives us the real $HOME — must pair with a home-relative-path entitlement
+        // for the read to actually be permitted.
+        guard let pwd = getpwuid(getuid()), let dir = pwd.pointee.pw_dir else { return nil }
+        let realHome = String(cString: dir)
+        let url = URL(fileURLWithPath: realHome)
             .appendingPathComponent("Library/Application Support/Plexamp/PlayQueue.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: url) else {
+            print("PlexampPlayer: failed to read PlayQueue.json at \(url.path) — likely a sandbox entitlement issue")
+            return nil
+        }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let payload = root["data"] as? [String: Any],
               let container = payload["MediaContainer"] as? [String: Any],

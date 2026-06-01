@@ -34,5 +34,9 @@
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spks</string>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER)-spki</string>
 	</array>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/Library/Application Support/Plexamp/</string>
+	</array>
 </dict>
 </plist>
