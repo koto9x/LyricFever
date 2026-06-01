@@ -8,7 +8,7 @@ import CoreData
 @testable import Lyric_Fever
 
 final class SongObjectMigrationTests: XCTestCase {
-    func test_newFieldsDefaultCorrectly() throws {
+    func test_newFieldsDefaultCorrectly() {
         let container = NSPersistentContainer(name: "Lyrics")
         let description = NSPersistentStoreDescription()
         description.type = NSInMemoryStoreType

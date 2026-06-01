@@ -19,15 +19,15 @@
         </uniquenessConstraints>
     </entity>
     <entity name="SongObject" representedClassName="SongObject" syncable="YES">
+        <attribute name="albumID" optional="YES" attributeType="String"/>
+        <attribute name="appleMusicID" optional="YES" attributeType="String"/>
         <attribute name="downloadDate" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="id" attributeType="String"/>
         <attribute name="language" optional="YES" attributeType="String"/>
         <attribute name="lyricsTimestamps" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer" customClassName="[TimeInterval]"/>
         <attribute name="lyricsWords" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer" customClassName="[String]"/>
-        <attribute name="title" attributeType="String"/>
-        <attribute name="appleMusicID" optional="YES" attributeType="String"/>
-        <attribute name="albumID" optional="YES" attributeType="String"/>
         <attribute name="sourceProvider" optional="YES" attributeType="String"/>
+        <attribute name="title" attributeType="String"/>
         <attribute name="userPicked" optional="NO" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
         <uniquenessConstraints>
             <uniquenessConstraint>
