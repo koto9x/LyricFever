@@ -83,28 +83,49 @@ import MediaRemoteAdapter
         musicController.onTrackInfoReceived = { data in
             print("Track info received")
             Task { @MainActor in
-//                if self.appleMusicUniqueIdentifier == data.payload.uniqueIdentifier {
-//                    print("Apple Music Artwork Workaround: Ignoring artwork for existing song")
-//                    return
-//                } else {
-//                    self.appleMusicUniqueIdentifier = data.payload.uniqueIdentifier
-//                }
                 guard self.currentPlayer == .appleMusic else {
                     return
                 }
-                guard let artwork = data?.payload.artwork else {
-                    if self.currentlyPlaying == nil {
-                        self.artworkImage = nil
+                guard let payload = data?.payload else { return }
+                guard payload.applicationName == "Music" else {
+                    return
+                }
+                // ── Source-of-truth track-change detection ──────────────
+                // MediaRemoteAdapter delivers the freshest "what's actually
+                // playing" snapshot — way more reliable than Music.app's
+                // com.apple.Music.playerInfo notification, which can lag or
+                // drop entirely on track transitions. If the title in the
+                // payload doesn't match our cached currentlyPlayingName, kick
+                // a re-detect through appleMusicNetworkFetch (which re-reads
+                // Music.app via AppleScript and re-maps to Spotify ID).
+                if let payloadTitle = payload.title,
+                   !payloadTitle.isEmpty,
+                   payloadTitle != self.currentlyPlayingName {
+                    print("MediaRemote: track change detected (\(self.currentlyPlayingName ?? "nil") → \(payloadTitle)) — forcing chain refresh")
+                    self.currentlyPlayingName = payloadTitle
+                    self.currentlyPlayingArtist = payload.artist
+                    self.currentAlbumName = payload.album
+                    if let durationMicros = payload.durationMicros {
+                        self.duration = Int(durationMicros / 1000)
                     }
-                    print("Apple Music Artwork Workaround: Ignoring No Artwork")
-                    return
+                    // Refresh persistent ID directly off AppleScript — it
+                    // catches up by the time MediaRemote fires (slightly
+                    // after the playerInfo notification path).
+                    let freshPID = self.appleMusicPlayer.persistentID
+                    if let freshPID, freshPID != self.currentlyPlayingAppleMusicPersistentID {
+                        self.currentlyPlayingAppleMusicPersistentID = freshPID
+                    }
+                    Task {
+                        await self.appleMusicStarter()
+                    }
                 }
-                guard data?.payload.applicationName == "Music" else {
-                    return
+                // ── Artwork ─────────────────────────────────────────────
+                if let artwork = payload.artwork {
+                    self.artworkImage = artwork
+                } else if self.currentlyPlaying == nil {
+                    self.artworkImage = nil
                 }
-                self.artworkImage = artwork
             }
-            // This will only be called for Apple Music events
         }
         musicController.startListening()
     }
