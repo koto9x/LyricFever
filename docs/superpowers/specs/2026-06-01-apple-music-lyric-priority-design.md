@@ -32,7 +32,7 @@ The user has now opted in to **one** MusicKit authorization, unblocking Apple Mu
 
 | Type | Role |
 |---|---|
-| `AppleMusicLyricProvider` | Conforms to existing `LyricProvider`. Wraps `MusicDataRequest` to hit `GET /v1/catalog/{storefront}/songs/{id}/lyrics`. Parses TTML into the existing `NetworkFetchReturn` shape. |
+| `AppleMusicLyricProvider` | Conforms to existing `LyricProvider`. Wraps `MusicDataRequest` to hit `GET /v1/catalog/{storefront}/songs/{id}/lyrics`. The `{storefront}` segment is auto-resolved by MusicKit from the signed-in user's region — we never compute it ourselves. Parses TTML into the existing `NetworkFetchReturn` shape. |
 | `AppleMusicAuthManager` | `@MainActor` singleton. Wraps `MusicAuthorization.currentStatus` and `MusicAuthorization.request()`. Token persistence is delegated to Apple's framework. |
 | `AppleMusicPrefetcher` | `actor`. Orchestrates album + queue-window prefetch via bounded TaskGroup (concurrency cap 4). Writes results to CoreData on a background context. |
 | `AppleMusicAuthView` | SwiftUI sheet shown on first AM track change when status is `.notDetermined`. Explains scope + triggers `request()`. |
@@ -140,7 +140,9 @@ Set `NSPersistentStoreDescription.shouldInferMappingModelAutomatically = true`.
 **Read path:** On track-change CoreData lookup:
 - If `userPicked == true` → use cached lyrics, **do not** run network chain (even if AM provider would have succeeded).
 
-**Bust path:** New menubar item "Reset lyrics for this track" → `userPicked = false; lyrics = nil; sourceProvider = nil` → next play re-runs the full chain.
+**Bust path:** New menubar item "Reset lyrics for this track" → `userPicked = false; lyrics = nil; sourceProvider = nil` → next play re-runs the full chain. This same item also busts `sourceProvider == "none_found"` entries (see Error Handling), giving the user a single way to retry a previously-unavailable track if lyrics have since been added.
+
+**`none_found` retry policy:** Sticky. Once cached, never auto-retried — same pattern as `userPicked`. Rationale: matches the user's mental model (one cache state per track), avoids surprise re-fetches, and the manual bust path covers the "lyrics were added later" edge case explicitly.
 
 ---
 
