@@ -1484,17 +1484,26 @@ import MediaRemoteAdapter
     /// the full lyric-fetch chain from scratch.
     func resetLyricsForCurrentTrack() {
         guard let trackID = currentlyPlaying else { return }
-        let ctx = coreDataContainer.viewContext
-        let request: NSFetchRequest<SongObject> = SongObject.fetchRequest()
-        request.predicate = NSPredicate(format: "id == %@", trackID)
-        if let existing = try? ctx.fetch(request).first {
-            ctx.delete(existing)
-            saveCoreData()
+        // Run asynchronously so the menubar-button click handler returns immediately
+        // and the main thread isn't blocked by CoreData I/O or the ScriptingBridge
+        // calls inside setCurrentPropertiesPublic(). All work still runs on
+        // @MainActor (required for viewContext), but yields the call stack first.
+        Task { @MainActor in
+            let ctx = coreDataContainer.viewContext
+            let request: NSFetchRequest<SongObject> = SongObject.fetchRequest()
+            request.predicate = NSPredicate(format: "id == %@", trackID)
+            if let existing = try? ctx.fetch(request).first {
+                ctx.delete(existing)
+                saveCoreData()
+            }
+            // Reset in-memory state; the next player-change tick will re-fetch.
+            currentlyPlayingLyrics = []
+            currentFetchTask?.cancel()
+            // Yield once so the cancelled task can observe its cancellation before
+            // setCurrentPropertiesPublic() spawns a new fetch chain.
+            await Task.yield()
+            setCurrentPropertiesPublic()
         }
-        // Reset in-memory state; the next player-change tick will re-fetch.
-        currentlyPlayingLyrics = []
-        currentFetchTask?.cancel()
-        setCurrentPropertiesPublic()
     }
 
     func fetchFromCoreData(for trackID: String) -> [LyricLine]? {
