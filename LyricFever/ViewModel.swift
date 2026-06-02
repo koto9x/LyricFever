@@ -84,10 +84,26 @@ import MediaRemoteAdapter
         musicController.onTrackInfoReceived = { data in
             print("Track info received")
             Task { @MainActor in
+                guard let payload = data?.payload else { return }
+
+                // ── Artwork (app-agnostic) ───────────────────────────────
+                // Apply artwork from ANY MediaRemote source — Music, Plexamp,
+                // Spotify, etc. This block must fire BEFORE the applicationName
+                // and currentPlayer guards so Plexamp (and any other non-Music
+                // source) can update the album art.
+                print("ViewModel: artwork from \(payload.applicationName ?? "?") — payload.artwork=\(payload.artwork == nil ? "nil" : "set"), artworkDataBase64.count=\(payload.artworkDataBase64?.count ?? 0)")
+                if let artwork = payload.artwork {
+                    self.artworkImage = artwork
+                } else if self.currentlyPlaying == nil {
+                    self.artworkImage = nil
+                }
+
+                // ── Apple-Music-only track-change detection ──────────────
+                // Everything below only applies when the active player is
+                // Apple Music and the notification is from Music.app.
                 guard self.currentPlayer == .appleMusic else {
                     return
                 }
-                guard let payload = data?.payload else { return }
                 guard payload.applicationName == "Music" else {
                     return
                 }
@@ -148,12 +164,6 @@ import MediaRemoteAdapter
                             await self.appleMusicPrefetcher.warmQueueWindow(5, appleMusicPlayer: self.appleMusicPlayer)
                         }
                     }
-                }
-                // ── Artwork ─────────────────────────────────────────────
-                if let artwork = payload.artwork {
-                    self.artworkImage = artwork
-                } else if self.currentlyPlaying == nil {
-                    self.artworkImage = nil
                 }
             }
         }
