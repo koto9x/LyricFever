@@ -48,12 +48,27 @@ import MediaRemoteAdapter
         return formatter.string(from: TimeInterval(totalSeconds)) ?? "0:00"
     }
     #if os(macOS)
+    // MARK: - Plexamp UI visibility gate
+
+    /// Set to `true` by FullscreenView.onAppear / onDisappear.
+    @ObservationIgnored var fullscreenViewVisible: Bool = false
+    /// Set to `true` by MenubarWindowView.onAppear / onDisappear.
+    @ObservationIgnored var menubarViewVisible: Bool = false
+
+    /// Polling is active when at least one LyricFever view is on screen.
+    var isLyricFeverUIActive: Bool { fullscreenViewVisible || menubarViewVisible }
+
     /// Plexamp doesn't post DistributedNotificationCenter events the way Spotify and
     /// Apple Music do, so we drive song-change + play-state updates off PlexampPlayer's
     /// own polling callbacks. ViewModel keeps responsibility for the SwiftUI/CoreData
     /// state mutations.
     private func initPlexampObservation() {
         print("ViewModel: initPlexampObservation — usePlexamp via storage=\(userDefaultStorage.usePlexamp), via UserDefaults.standard=\(UserDefaults.standard.bool(forKey: "usePlexamp")), spotifyOrAppleMusic=\(userDefaultStorage.spotifyOrAppleMusic), currentPlayer=\(currentPlayer)")
+        // Wire up the polling gate: PlexampPlayer only hits Plexamp's HTTP API
+        // when LyricFever's UI (fullscreen or menubar window) is visible.
+        plexampPlayer.shouldPoll = { [weak self] in
+            self?.isLyricFeverUIActive ?? false
+        }
         plexampPlayer.onTrackChange = { [weak self] key in
             print("ViewModel: PlexampPlayer.onTrackChange fired with key=\(key ?? "nil")")
             guard let self else { return }

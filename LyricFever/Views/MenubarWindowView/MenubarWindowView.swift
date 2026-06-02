@@ -739,9 +739,13 @@ struct MenubarWindowView: View {
                 .animation(.smooth, value: viewmodel.currentBackground)
         )
         .onAppear {
+            viewmodel.menubarViewVisible = true
             if !viewmodel.isStopped {
                 viewmodel.currentVolume = viewmodel.currentPlayerInstance.volume
             }
+        }
+        .onDisappear {
+            viewmodel.menubarViewVisible = false
         }
         .task {
             let languages = await Task.detached {

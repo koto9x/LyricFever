@@ -339,6 +339,7 @@ struct FullscreenView: View {
             BackgroundView(colors: $gradient, timer: $timer, points: $points)
         }
         .onAppear {
+            viewmodel.fullscreenViewVisible = true
             if !viewmodel.userDefaultStorage.animateOnStartupFullscreen {
                 animate = false
             }
@@ -348,6 +349,9 @@ struct FullscreenView: View {
             catch {
                 print("Error configuring tips: \(error)")
             }
+        }
+        .onDisappear {
+            viewmodel.fullscreenViewVisible = false
         }
         .task(id: viewmodel.artworkImage) {
             print("NEW ARTWORK")

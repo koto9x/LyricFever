@@ -48,6 +48,11 @@ class PlexampPlayer: Player {
     private var commandID = 0
     private var pollTask: Task<Void, Never>?
 
+    /// Gate: polling only runs when the LyricFever UI is visible.
+    /// ViewModel sets this closure in `initPlexampObservation()`.
+    /// Returns `false` by default (safe) until ViewModel wires it up.
+    var shouldPoll: () -> Bool = { false }
+
     /// "What has the callback been told about so far?" — separate from `timeline`/`metadata`
     /// so callbacks fire as soon as they're hooked, even if polling discovered the state
     /// before the ViewModel had a chance to subscribe.
@@ -141,20 +146,34 @@ class PlexampPlayer: Player {
     }
 
     func togglePlayback() {
-        Task { await sendPlayerCommand("playback/playPause") }
+        Task {
+            await sendPlayerCommand("playback/playPause")
+            // Force an immediate state poll so the UI reflects the new
+            // play/pause state even if the menubar window just closed.
+            await pollOnce()
+        }
     }
 
     func rewind() {
-        Task { await sendPlayerCommand("playback/skipPrevious") }
+        Task {
+            await sendPlayerCommand("playback/skipPrevious")
+            await pollOnce()
+        }
     }
 
     func forward() {
-        Task { await sendPlayerCommand("playback/skipNext") }
+        Task {
+            await sendPlayerCommand("playback/skipNext")
+            await pollOnce()
+        }
     }
 
     func seek(toMillis millis: Int) {
         // Plex's seekTo offset is in milliseconds.
-        Task { await sendPlayerCommand("playback/seekTo", query: ["offset": "\(max(0, millis))"]) }
+        Task {
+            await sendPlayerCommand("playback/seekTo", query: ["offset": "\(max(0, millis))"])
+            await pollOnce()
+        }
         // Optimistically nudge our cached timeline so the highlight jumps
         // immediately instead of waiting for the next 1s poll.
         if var t = timeline {
@@ -189,8 +208,13 @@ class PlexampPlayer: Player {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollOnce()
-                try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
+                if self?.shouldPoll() == true {
+                    await self?.pollOnce()
+                    try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
+                } else {
+                    // UI hidden: sleep longer between checks, don't hit Plexamp's HTTP API.
+                    try? await Task.sleep(nanoseconds: UInt64(5.0 * 1_000_000_000))
+                }
             }
         }
     }
@@ -212,8 +236,9 @@ class PlexampPlayer: Player {
         guard let url = components.url else { return }
         var req = URLRequest(url: url)
         req.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Client-Identifier")
-        // Plexamp seems to accept any target identifier as long as one is present.
-        req.setValue(Self.clientIdentifier, forHTTPHeaderField: "X-Plex-Target-Client-Identifier")
+        // X-Plex-Target-Client-Identifier deliberately omitted: we are a read-only polling
+        // client, not a Plex controller. Including it caused Plexamp to treat LyricFever as
+        // a competing controller and hang its play button on track starts.
 
         do {
             let (data, _) = try await urlSession.data(for: req)
