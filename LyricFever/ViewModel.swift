@@ -128,14 +128,28 @@ import MediaRemoteAdapter
             Task { @MainActor in
                 guard let payload = data?.payload else { return }
 
-                // ── Artwork (app-agnostic) ───────────────────────────────
+                // ── Artwork (app-agnostic, title-guarded) ────────────────
                 // Apply artwork from ANY MediaRemote source — Music, Plexamp,
                 // Spotify, etc. This block must fire BEFORE the applicationName
                 // and currentPlayer guards so Plexamp (and any other non-Music
                 // source) can update the album art.
+                // Title guard: a browser tab hosting the Music Assistant web
+                // player keeps a stale Now Playing entry even when idle, and
+                // its artwork was clobbering the actual player's art (Sophia
+                // Stel cover on a Beatles track). Only accept artwork when the
+                // payload's title plausibly matches what we're displaying.
                 print("ViewModel: artwork from \(payload.applicationName ?? "?") — payload.artwork=\(payload.artwork == nil ? "nil" : "set"), artworkDataBase64.count=\(payload.artworkDataBase64?.count ?? 0)")
                 if let artwork = payload.artwork {
-                    self.artworkImage = artwork
+                    let payloadTitle = payload.title ?? ""
+                    let displayedTitle = self.currentlyPlayingName ?? ""
+                    let titlesMatch = payloadTitle.isEmpty || displayedTitle.isEmpty
+                        || displayedTitle.localizedCaseInsensitiveContains(payloadTitle)
+                        || payloadTitle.localizedCaseInsensitiveContains(displayedTitle)
+                    if titlesMatch {
+                        self.artworkImage = artwork
+                    } else {
+                        print("ViewModel: skipping artwork from \(payload.applicationName ?? "?") — payload title \"\(payloadTitle)\" doesn't match displayed \"\(displayedTitle)\"")
+                    }
                 } else if self.currentlyPlaying == nil {
                     self.artworkImage = nil
                 }
