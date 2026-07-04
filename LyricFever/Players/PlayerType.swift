@@ -16,6 +16,8 @@ enum PlayerType: CustomStringConvertible, CaseIterable, Identifiable {
                 return "Apple Music"
             case .plexamp:
                 return "Plexamp"
+            case .musicAssistant:
+                return "Music Assistant"
         }
     }
 
@@ -27,9 +29,12 @@ enum PlayerType: CustomStringConvertible, CaseIterable, Identifiable {
                 return "music"
             case .plexamp:
                 return "music.note.house"
+            case .musicAssistant:
+                return "hifispeaker.2"
         }
     }
     case spotify
     case appleMusic
     case plexamp
+    case musicAssistant
 }

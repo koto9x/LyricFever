@@ -167,6 +167,8 @@ struct MainSettingsView: View {
                         error = .openSpotify
                 case .plexamp:
                         error = .openSpotify  // closest existing error case; Plexamp errors handled live
+                case .musicAssistant:
+                        error = .openSpotify  // closest existing error case; MA errors handled live
                 }
             }
         }

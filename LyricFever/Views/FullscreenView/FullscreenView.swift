@@ -137,6 +137,28 @@ struct FullscreenView: View {
                     Toggle("Animate on startup", isOn: $viewmodel.userDefaultStorage.animateOnStartupFullscreen)
                     Toggle("Windowed fullscreen (stays on current Space)", isOn: $viewmodel.userDefaultStorage.useWindowedFullscreen)
                     Divider()
+                    // Music Assistant connection. Editing these here (inside the
+                    // app) is the reliable path — external `defaults write` for
+                    // newly-added keys doesn't dependably reach the sandboxed
+                    // app process (cfprefsd staleness).
+                    Toggle("Use Music Assistant", isOn: $viewmodel.userDefaultStorage.useMusicAssistant)
+                    if viewmodel.userDefaultStorage.useMusicAssistant {
+                        TextField("Host (host:port)", text: $viewmodel.userDefaultStorage.musicAssistantHost)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 240)
+                        SecureField("API token", text: $viewmodel.userDefaultStorage.musicAssistantToken)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 240)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(viewmodel.musicAssistantPlayer.isRunning ? Color.green : Color.red)
+                                .frame(width: 8, height: 8)
+                            Text(viewmodel.musicAssistantPlayer.isRunning ? "Connected" : "Not connected")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    Divider()
                     Button {
                         if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "fullscreen" }) {
                             window.toggleFullScreen(nil)

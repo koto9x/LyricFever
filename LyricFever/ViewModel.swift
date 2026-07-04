@@ -93,6 +93,33 @@ import MediaRemoteAdapter
             }
         }
     }
+
+    /// Music Assistant pushes track-change + play-state updates over its own
+    /// WebSocket (see MusicAssistantPlayer) — same shape as the Plexamp
+    /// observation above, just driven by a socket instead of an HTTP poll.
+    private func initMusicAssistantObservation() {
+        musicAssistantPlayer.shouldConnect = { [weak self] in
+            guard let self else { return false }
+            return self.userDefaultStorage.useMusicAssistant && self.isLyricFeverUIActive
+        }
+        musicAssistantPlayer.onTrackChange = { [weak self] queueItemId in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.currentPlayer == .musicAssistant else { return }
+                self.setCurrentProperties()
+            }
+        }
+        musicAssistantPlayer.onPlaybackStateChange = { [weak self] isPlaying in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.currentPlayer == .musicAssistant else { return }
+                self.isPlaying = isPlaying
+                if !isPlaying {
+                    self.currentLyricsDriftFix?.cancel()
+                }
+            }
+        }
+    }
     #endif
 
     private func initAppleMusicWorkaround() {
@@ -210,6 +237,13 @@ import MediaRemoteAdapter
     var appleMusicPlayer = AppleMusicPlayer()
     var spotifyPlayer = SpotifyPlayer()
     var plexampPlayer = PlexampPlayer()
+    // Reads UserDefaults directly (rather than via UserDefaultStorage) since
+    // these closures run off the main actor on a background gate loop and
+    // don't need SwiftUI observation — just the current value.
+    var musicAssistantPlayer = MusicAssistantPlayer(
+        host: { UserDefaults.standard.string(forKey: "musicAssistantHost") ?? "100.114.244.6:8095" },
+        token: { UserDefaults.standard.string(forKey: "musicAssistantToken").flatMap { $0.isEmpty ? nil : $0 } }
+    )
     #else
     var currentTab = TabType.nowPlaying
     var spotifyPlayer = TVSpotifyPlayer()
@@ -225,6 +259,8 @@ import MediaRemoteAdapter
                 return spotifyPlayer
             case .plexamp:
                 return plexampPlayer
+            case .musicAssistant:
+                return musicAssistantPlayer
         }
         #else
         return spotifyPlayer
@@ -368,6 +404,14 @@ import MediaRemoteAdapter
     #if os(macOS)
     var currentPlayer: PlayerType {
         get {
+            // Music Assistant, when enabled, takes priority over everything
+            // below: it already aggregates Plex/Apple Music/YouTube Music/NTS
+            // into one hub, so if it's actively playing something there's no
+            // ambiguity about which app the user is actually listening to —
+            // unlike the Plexamp/Apple Music/Spotify race this replaces.
+            if self.userDefaultStorage.useMusicAssistant, musicAssistantPlayer.isPlaying {
+                return .musicAssistant
+            }
             // Routing priority for `usePlexamp = true`:
             //   1. Plexamp is actively playing → use Plexamp.
             //   2. Apple Music or Spotify is actively playing → use them
@@ -401,12 +445,17 @@ import MediaRemoteAdapter
             }
         } set {
             switch newValue {
+                case .musicAssistant:
+                    self.userDefaultStorage.useMusicAssistant = true
                 case .plexamp:
+                    self.userDefaultStorage.useMusicAssistant = false
                     self.userDefaultStorage.usePlexamp = true
                 case .appleMusic:
+                    self.userDefaultStorage.useMusicAssistant = false
                     self.userDefaultStorage.usePlexamp = false
                     self.userDefaultStorage.spotifyOrAppleMusic = true
                 case .spotify:
+                    self.userDefaultStorage.useMusicAssistant = false
                     self.userDefaultStorage.usePlexamp = false
                     self.userDefaultStorage.spotifyOrAppleMusic = false
             }
@@ -492,6 +541,7 @@ import MediaRemoteAdapter
         initAppleMusicWorkaround()
         #if os(macOS)
         initPlexampObservation()
+        initMusicAssistantObservation()
         #endif
         
         coreDataContainer.loadPersistentStores { description, error in
@@ -1072,6 +1122,22 @@ import MediaRemoteAdapter
                 // on kaiosmini. Cheap: each call returns <500ms from cache after
                 // the first lookup ever per track.
                 preloadPlexampQueueLyrics(excluding: plexampPlayer.metadata?.ratingKey)
+            case .musicAssistant:
+                guard let track = musicAssistantPlayer.trackName, let artist = musicAssistantPlayer.artistName, let duration = musicAssistantPlayer.duration else {
+                    currentlyPlayingName = nil
+                    currentlyPlayingArtist = nil
+                    self.currentAlbumName = nil
+                    return
+                }
+                // MA's queue_item_id is a stable per-play identifier — same role
+                // as Plexamp's ratingKey, more reliable than Apple Music's
+                // MediaRemote persistentID.
+                currentlyPlaying = musicAssistantPlayer.activeQueueId.flatMap { musicAssistantPlayer.queues[$0]?.queueItemId }
+                currentlyPlayingName = track
+                currentlyPlayingArtist = artist
+                self.duration = duration
+                self.currentAlbumName = musicAssistantPlayer.albumName
+                self.currentTime = CurrentTimeWithStoredDate(currentTime: 0)
         }
     }
 

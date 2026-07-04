@@ -74,6 +74,20 @@ class UserDefaultStorage {
     // for track metadata; lyrics resolve via Koto's self-hosted lyrics.9x.studio /api/get endpoint.
     @ObservableUserDefault(.init(key: "usePlexamp", defaultValue: true, store: .standard))
     @ObservationIgnored var usePlexamp: Bool
+    // When true, takes priority over usePlexamp/spotifyOrAppleMusic: watches
+    // Music Assistant's queues over its push WebSocket instead of tracking
+    // Plexamp/Apple Music/Spotify individually. MA already aggregates those
+    // (plus YouTube Music, NTS Radio) into one hub, so this is meant to
+    // eventually replace the per-app "smart routing" dance below it.
+    @ObservableUserDefault(.init(key: "useMusicAssistant", defaultValue: false, store: .standard))
+    @ObservationIgnored var useMusicAssistant: Bool
+    // host:port, no scheme. Defaults to kaiosmini's Tailscale IP (same one
+    // Lyrics9x already uses) so the existing ATS exception domain covers it
+    // without needing a second Info.plist entry.
+    @ObservableUserDefault(.init(key: "musicAssistantHost", defaultValue: "100.114.244.6:8095", store: .standard))
+    @ObservationIgnored var musicAssistantHost: String
+    @ObservableUserDefault(.init(key: "musicAssistantToken", defaultValue: "", store: .standard))
+    @ObservationIgnored var musicAssistantToken: String
     @ObservableUserDefault(.init(key: "latestUpdateWindowShown", defaultValue: 0, store: .standard))
     @ObservationIgnored var latestUpdateWindowShown: Int
     #endif
