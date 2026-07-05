@@ -443,6 +443,13 @@ struct LyricsNSScrollView: NSViewRepresentable {
         if lyricsChanged {
             c.prevLyrics = lyrics
             c.pendingPrePosition = true    // arm the one-shot pre-position
+            // A scroll override from the previous song is meaningless for the
+            // new one — and nothing else ever clears it, so without this a
+            // single manual scroll would freeze auto-scroll for every
+            // subsequent track.
+            if ViewModel.shared.userScrolledOffSync {
+                Task { @MainActor in ViewModel.shared.userScrolledOffSync = false }
+            }
             rebuildCells(coordinator: c)   // always instant inside rebuildCells
         }
 
@@ -482,15 +489,24 @@ struct LyricsNSScrollView: NSViewRepresentable {
         // even when the user is in off-sync mode, then clear the flag.
         let resyncRequested = scrollResyncSignal != c.prevScrollResyncSignal
         c.prevScrollResyncSignal = scrollResyncSignal
-        if resyncRequested, let idx = currentIndex {
-            scrollToCenter(coordinator: c, index: idx, animated: true)
+        if resyncRequested {
+            // Clear the override even when no line is active yet (loading /
+            // paused / player-stuck states) — otherwise the tap is consumed
+            // here but nothing happens, and the button appears dead.
             Task { @MainActor in ViewModel.shared.userScrolledOffSync = false }
-            return
+            if let idx = currentIndex {
+                scrollToCenter(coordinator: c, index: idx, animated: true)
+                return
+            }
+            // No active line: fall through so the pre-position logic below can
+            // anchor the view once an index (or fresh lyrics) arrives.
         }
 
         // Scroll after layout has settled. Skip auto-scroll while the user is
         // overriding (scrolled off-sync) — they want to read past lyrics.
-        let userOverride = ViewModel.shared.userScrolledOffSync
+        // (The Task above clears the flag asynchronously, so honor the resync
+        // request immediately rather than reading the stale value.)
+        let userOverride = ViewModel.shared.userScrolledOffSync && !resyncRequested
         let targetIndex = currentIndex
         DispatchQueue.main.async { [c] in
             c.syncDocumentFrame()   // re-check now that real dimensions are known

@@ -78,6 +78,15 @@ class MusicAssistantPlayer: NSObject, Player {
     private var authenticated = false
     private var reconnectTask: Task<Void, Never>?
 
+    // Keepalive bookkeeping. MA pushes events sparsely (time updates only on
+    // seeks/corrections), so a silently-dead socket — VPN rekey, sleep/wake,
+    // Wi-Fi roam — looks identical to a quiet-but-healthy one: the pending
+    // receive() never errors, the gate loop sees wsTask != nil, and lyrics
+    // freeze on the last known track forever. A ping round-trip is the only
+    // reliable liveness signal.
+    private var lastPingSent: Date?
+    private var lastPongReceived: Date = .distantPast
+
     private(set) var queues: [String: MAQueueSnapshot] = [:]
     /// Whichever queue is currently playing. Nil when nothing's playing
     /// anywhere in MA. Sticky across momentary "idle" blips on the previously
@@ -109,13 +118,27 @@ class MusicAssistantPlayer: NSObject, Player {
         self.tokenProvider = token
         super.init()
         urlSession = URLSession(configuration: .default)
+        // After sleep the socket is almost certainly dead — recycle it
+        // immediately instead of waiting for the ping watchdog to notice.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
         startGateLoop()
     }
 
     deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         wsTask?.cancel(with: .goingAway, reason: nil)
         reconnectTask?.cancel()
         gateTask?.cancel()
+    }
+
+    @objc private func systemDidWake() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.wsTask != nil else { return }
+            print("MusicAssistantPlayer: system woke — recycling socket")
+            self.forceReconnect()
+        }
     }
 
     /// Self-contained lifecycle: checks `shouldConnect()` every couple of
@@ -131,6 +154,7 @@ class MusicAssistantPlayer: NSObject, Player {
                 await MainActor.run { [weak self] in
                     self?.connectIfNeeded()
                     self?.disconnectIfNoLongerNeeded()
+                    self?.pingIfDue()
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
@@ -240,9 +264,52 @@ class MusicAssistantPlayer: NSObject, Player {
         print("MusicAssistantPlayer: connecting to \(url.absoluteString)")
         let task = urlSession.webSocketTask(with: url)
         wsTask = task
+        lastPingSent = nil
+        lastPongReceived = .distantPast
         task.resume()
-        receiveLoop()
+        receiveLoop(task)
         send(command: "auth", args: ["token": token], kind: "auth")
+    }
+
+    /// Ping keepalive, driven by the 2s gate loop: ping every ~14s while a
+    /// socket exists; if a pong hasn't come back within 10s the socket is
+    /// presumed dead and recycled. Runs pre-auth too, so a connect attempt
+    /// that black-holes (e.g. VPN tunnel mid-rekey) also gets recycled.
+    private func pingIfDue() {
+        guard let task = wsTask else { return }
+        if let sent = lastPingSent, lastPongReceived < sent {
+            if Date().timeIntervalSince(sent) > 10 {
+                print("MusicAssistantPlayer: pong overdue — socket presumed dead, reconnecting")
+                forceReconnect()
+            }
+            return
+        }
+        if lastPingSent == nil || Date().timeIntervalSince(lastPingSent!) >= 14 {
+            lastPingSent = Date()
+            task.sendPing { [weak self] error in
+                DispatchQueue.main.async {
+                    guard let self, self.wsTask === task else { return }
+                    if let error {
+                        print("MusicAssistantPlayer: ping failed: \(error)")
+                        self.forceReconnect()
+                    } else {
+                        self.lastPongReceived = Date()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tear down a presumed-dead socket; the gate loop re-establishes within
+    /// 2s. Queue snapshots are deliberately kept so lyrics don't blank during
+    /// the blip — the post-auth `player_queues/all` reseed replaces them
+    /// wholesale (and drops any queues that vanished server-side).
+    private func forceReconnect() {
+        wsTask?.cancel(with: .goingAway, reason: nil)
+        wsTask = nil
+        authenticated = false
+        pendingRequests = [:]
+        lastPingSent = nil
     }
 
     func disconnectIfNoLongerNeeded() {
@@ -256,6 +323,7 @@ class MusicAssistantPlayer: NSObject, Player {
         wsTask = nil
         authenticated = false
         pendingRequests = [:]
+        lastPingSent = nil
         let hadActive = activeQueueId != nil
         queues = [:]
         activeQueueId = nil
@@ -265,13 +333,18 @@ class MusicAssistantPlayer: NSObject, Player {
     }
 
     private func scheduleReconnect() {
+        // Cancel before nil-ing — otherwise the old task lingers half-open
+        // and its pending callbacks keep firing.
+        wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         authenticated = false
+        pendingRequests = [:]
+        lastPingSent = nil
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard let self, !Task.isCancelled else { return }
-            self.connectIfNeeded()
+            await MainActor.run { self.connectIfNeeded() }
         }
     }
 
@@ -297,21 +370,34 @@ class MusicAssistantPlayer: NSObject, Player {
         }
     }
 
-    private func receiveLoop() {
-        wsTask?.receive { [weak self] result in
+    private func receiveLoop(_ task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
             guard let self else { return }
             switch result {
                 case .failure(let error):
                     print("MusicAssistantPlayer: WS receive failed: \(error)")
-                    DispatchQueue.main.async { self.scheduleReconnect() }
+                    DispatchQueue.main.async {
+                        // A cancelled socket's pending receive also lands here.
+                        // Only react if this is still the LIVE socket — tearing
+                        // down whatever replaced it would cause reconnect
+                        // flapping (each cycle orphaning the next connection).
+                        guard self.wsTask === task else { return }
+                        self.scheduleReconnect()
+                    }
                 case .success(let message):
                     if case .string(let text) = message {
                         // Serialize all state mutation onto the main queue —
                         // `queues`/`activeQueueId` are read by SwiftUI on main,
                         // and main is FIFO so message order is preserved.
-                        DispatchQueue.main.async { self.handleIncoming(text) }
+                        DispatchQueue.main.async {
+                            guard self.wsTask === task else { return }
+                            self.handleIncoming(text)
+                        }
                     }
-                    self.receiveLoop()
+                    // Keep listening on THIS socket (not self.wsTask, which may
+                    // have been replaced) — a stale loop ends at the guard above
+                    // when its cancelled task's receive finally errors.
+                    self.receiveLoop(task)
             }
         }
     }
@@ -346,11 +432,7 @@ class MusicAssistantPlayer: NSObject, Player {
                     send(command: "player_queues/all", kind: "queues_all")
                 case "queues_all":
                     if let result = json["result"] as? [[String: Any]] {
-                        for dict in result {
-                            if let snap = Self.parseQueueDict(dict) {
-                                upsert(snapshot: snap)
-                            }
-                        }
+                        replaceQueues(with: result.compactMap(Self.parseQueueDict))
                         requestUpcomingItems()
                     }
                 case "queue_items":
@@ -403,6 +485,28 @@ class MusicAssistantPlayer: NSObject, Player {
                 )
             default:
                 break
+        }
+    }
+
+    /// Wholesale reseed from `player_queues/all` — unlike upsert(), queues
+    /// that no longer exist server-side (e.g. MA restarted while we were
+    /// disconnected) are dropped, so a vanished queue can't sit in the dict
+    /// claiming "playing" and projecting stale lyric positions forever.
+    private func replaceQueues(with snapshots: [MAQueueSnapshot]) {
+        let previousActiveItemId = activeSnapshot?.queueItemId
+        let previousActiveWasPlaying = activeSnapshot?.state == "playing"
+        queues = Dictionary(snapshots.map { ($0.queueId, $0) }, uniquingKeysWith: { _, new in new })
+        if let current = activeQueueId, queues[current] == nil {
+            activeQueueId = nil
+        }
+        recomputeActiveQueue()
+        let newActiveItemId = activeSnapshot?.queueItemId
+        let newActiveIsPlaying = activeSnapshot?.state == "playing"
+        if previousActiveItemId != newActiveItemId {
+            onTrackChange?(newActiveItemId)
+        }
+        if previousActiveWasPlaying != newActiveIsPlaying {
+            onPlaybackStateChange?(newActiveIsPlaying)
         }
     }
 
