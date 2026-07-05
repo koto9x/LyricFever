@@ -369,6 +369,9 @@ import MediaRemoteAdapter
     var airplayDelay: Bool = false
     #endif
     var isFetchingTranslation = false
+    /// Monotonic id for translation fetches, so the stuck-state watchdog in
+    /// `translationTask` only ever clears the spinner for its own fetch.
+    @ObservationIgnored private var translationFetchGeneration = 0
     var translationExists: Bool { !translatedLyric.isEmpty}
     
     // CoreData container (for saved lyrics)
@@ -792,7 +795,28 @@ import MediaRemoteAdapter
     @MainActor
     func translationTask(_ session: TranslationSession) async {
         isFetchingTranslation = true
+        translationFetchGeneration += 1
+        let generation = translationFetchGeneration
+        // Watchdog: Apple's Translation framework can leak its continuation
+        // when the session is invalidated mid-flight (track change, or server
+        // enrichment arriving first) — "SWIFT TASK CONTINUATION MISUSE:
+        // translations(from:) leaked its continuation". When that happens the
+        // await below never resumes and nothing else can clear the spinner,
+        // leaving the menubar stuck on "Translating...". If no verdict lands
+        // in 60s, clear the loading state; a slow first-time language-model
+        // download may outlive this, but its result still applies on arrival.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            guard let self, self.isFetchingTranslation, self.translationFetchGeneration == generation else { return }
+            print("Translation Service: watchdog cleared stuck isFetchingTranslation (translation never returned)")
+            self.isFetchingTranslation = false
+        }
         let translationResponse = await TranslationService.translationTask(session, request: currentlyPlayingLyrics.map { TranslationSession.Request(lyric: $0) })
+        guard generation == translationFetchGeneration else {
+            // A newer fetch superseded this one while we were suspended —
+            // don't touch shared state with a stale response.
+            return
+        }
         
         switch translationResponse {
             case .success(let array):
