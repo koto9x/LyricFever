@@ -125,6 +125,9 @@ struct ApiView: View {
                 isShowingDetailView = true
                 errorMessage = nil
                 ViewModel.shared.userDefaultStorage.hasOnboarded = true
+                // Fleet auth sync (koto-only): a validated fresh cookie is the
+                // fleet's new source of truth.
+                await FleetConfig.shared.push(cookie: ViewModel.shared.userDefaultStorage.cookie)
             } catch {
                 print("Failed to generate access token: \(error)")
                 errorMessage = String(describing: error)

@@ -646,7 +646,14 @@ import MediaRemoteAdapter
         Task {
             mustUpdateUrgent = await updaterService.urgentUpdateExists
         }
-        
+
+        // Fleet auth sync (koto-only): pull the shared Spotify cookie / MA
+        // token from kaiosmini. Must be kicked off BEFORE the early returns
+        // below so cold installs bootstrap even when onboarding would run.
+        Task {
+            await FleetConfig.shared.pullAndApply()
+        }
+
         // onAppear()
         print("on appear running")
         if userDefaultStorage.latestUpdateWindowShown < 23 {
