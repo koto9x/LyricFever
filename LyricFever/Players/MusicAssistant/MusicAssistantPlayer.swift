@@ -38,6 +38,26 @@ struct MAQueueSnapshot {
     let elapsedLastUpdated: Double?
     let queueItemId: String?
     let imageURL: String?
+    /// Position of `current_item` in the queue — used to fetch the upcoming
+    /// window for lyric preloading.
+    let currentIndex: Int?
+    /// `media_item.uri` (e.g. "apple_music://track/123") — stable across
+    /// replays, unlike `queue_item_id` which is per-enqueue. Used as the
+    /// CoreData caching key so a song's lyrics survive across sessions.
+    let mediaItemUri: String?
+}
+
+/// Metadata for an upcoming queue item, used to prewarm lyrics before the
+/// track actually starts.
+struct MAUpcomingTrack {
+    let uri: String?
+    let queueItemId: String?
+    let title: String?
+    let artist: String?
+    let album: String?
+    let durationSec: Double?
+
+    var cacheKey: String? { uri ?? queueItemId }
 }
 
 // NOTE: sibling-track lyric prewarm (like preloadPlexampQueueLyrics) is not
@@ -74,6 +94,13 @@ class MusicAssistantPlayer: NSObject, Player {
     var onTrackChange: ((_ queueItemId: String?) -> Void)?
     /// Fired when the active queue's playback state flips playing/paused.
     var onPlaybackStateChange: ((_ isPlaying: Bool) -> Void)?
+    /// Fired with the next few tracks of the active queue whenever they
+    /// (re)load — ViewModel uses this to preload lyrics ahead of playback.
+    var onUpcomingItems: ((_ upcoming: [MAUpcomingTrack]) -> Void)?
+
+    /// message_id → request kind, so responses can be routed without relying
+    /// on ordering heuristics.
+    private var pendingRequests: [String: String] = [:]
 
     private var gateTask: Task<Void, Never>?
 
@@ -179,7 +206,7 @@ class MusicAssistantPlayer: NSObject, Player {
                 queueId: snap.queueId, state: snap.state, title: snap.title, artist: snap.artist,
                 album: snap.album, durationMs: snap.durationMs, elapsedMs: Double(millis),
                 elapsedLastUpdated: Date().timeIntervalSince1970, queueItemId: snap.queueItemId,
-                imageURL: snap.imageURL
+                imageURL: snap.imageURL, currentIndex: snap.currentIndex, mediaItemUri: snap.mediaItemUri
             )
         }
     }
@@ -215,7 +242,7 @@ class MusicAssistantPlayer: NSObject, Player {
         wsTask = task
         task.resume()
         receiveLoop()
-        send(command: "auth", args: ["token": token])
+        send(command: "auth", args: ["token": token], kind: "auth")
     }
 
     func disconnectIfNoLongerNeeded() {
@@ -228,6 +255,7 @@ class MusicAssistantPlayer: NSObject, Player {
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         authenticated = false
+        pendingRequests = [:]
         let hadActive = activeQueueId != nil
         queues = [:]
         activeQueueId = nil
@@ -252,9 +280,13 @@ class MusicAssistantPlayer: NSObject, Player {
         return "\(messageID)"
     }
 
-    private func send(command: String, args: [String: Any] = [:]) {
+    private func send(command: String, args: [String: Any] = [:], kind: String? = nil) {
         guard let task = wsTask else { return }
-        var payload: [String: Any] = ["message_id": nextMessageID(), "command": command]
+        let messageID = nextMessageID()
+        if let kind {
+            pendingRequests[messageID] = kind
+        }
+        var payload: [String: Any] = ["message_id": messageID, "command": command]
         if !args.isEmpty { payload["args"] = args }
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let text = String(data: data, encoding: .utf8) else { return }
@@ -294,7 +326,8 @@ class MusicAssistantPlayer: NSObject, Player {
             handleEvent(event, objectId: json["object_id"] as? String, data: json["data"])
             return
         }
-        if json["message_id"] != nil {
+        if let messageID = json["message_id"] as? String {
+            let kind = pendingRequests.removeValue(forKey: messageID)
             if json["error_code"] != nil {
                 print("MusicAssistantPlayer: command errored: \(json["details"] ?? "unknown")")
                 if !authenticated {
@@ -306,24 +339,43 @@ class MusicAssistantPlayer: NSObject, Player {
                 }
                 return
             }
-            if !authenticated {
-                // First successful result after connecting is the auth response.
-                authenticated = true
-                print("MusicAssistantPlayer: authenticated")
-                send(command: "player_queues/all")
-                return
-            }
-            if let result = json["result"] as? [[String: Any]] {
-                // Seed from player_queues/all
-                for dict in result {
-                    if let snap = Self.parseQueueDict(dict) {
-                        upsert(snapshot: snap)
+            switch kind {
+                case "auth":
+                    authenticated = true
+                    print("MusicAssistantPlayer: authenticated")
+                    send(command: "player_queues/all", kind: "queues_all")
+                case "queues_all":
+                    if let result = json["result"] as? [[String: Any]] {
+                        for dict in result {
+                            if let snap = Self.parseQueueDict(dict) {
+                                upsert(snapshot: snap)
+                            }
+                        }
+                        requestUpcomingItems()
                     }
-                }
+                case "queue_items":
+                    if let result = json["result"] as? [[String: Any]] {
+                        let upcoming = result.compactMap(Self.parseUpcomingItem)
+                        if !upcoming.isEmpty {
+                            onUpcomingItems?(upcoming)
+                        }
+                    }
+                default:
+                    break // fire-and-forget command (play/pause/seek) responses
             }
             return
         }
         // Otherwise: ServerInfoMessage (sent once on connect) — nothing to do.
+    }
+
+    /// Ask MA for the next few tracks after the active queue's current index,
+    /// so lyrics can be prewarmed before each track arrives.
+    private func requestUpcomingItems() {
+        guard let queueId = activeQueueId,
+              let index = queues[queueId]?.currentIndex else { return }
+        send(command: "player_queues/items",
+             args: ["queue_id": queueId, "limit": 3, "offset": index + 1],
+             kind: "queue_items")
     }
 
     private func handleEvent(_ event: String, objectId: String?, data: Any?) {
@@ -331,6 +383,11 @@ class MusicAssistantPlayer: NSObject, Player {
             case "queue_updated", "queue_items_updated":
                 guard let dict = data as? [String: Any], let snap = Self.parseQueueDict(dict) else { return }
                 upsert(snapshot: snap)
+                if event == "queue_items_updated", snap.queueId == activeQueueId {
+                    // Queue contents changed (tracks added/reordered) — refresh
+                    // the preload window.
+                    requestUpcomingItems()
+                }
             case "queue_time_updated":
                 guard let queueId = objectId else { return }
                 let elapsed: Double? = (data as? NSNumber)?.doubleValue
@@ -341,7 +398,8 @@ class MusicAssistantPlayer: NSObject, Player {
                     queueId: existing.queueId, state: existing.state, title: existing.title,
                     artist: existing.artist, album: existing.album, durationMs: existing.durationMs,
                     elapsedMs: elapsed * 1000, elapsedLastUpdated: Date().timeIntervalSince1970,
-                    queueItemId: existing.queueItemId, imageURL: existing.imageURL
+                    queueItemId: existing.queueItemId, imageURL: existing.imageURL,
+                    currentIndex: existing.currentIndex, mediaItemUri: existing.mediaItemUri
                 )
             default:
                 break
@@ -360,6 +418,9 @@ class MusicAssistantPlayer: NSObject, Player {
         let newActiveIsPlaying = activeSnapshot?.state == "playing"
         if previousActiveItemId != newActiveItemId {
             onTrackChange?(newActiveItemId)
+            // New track underway — refresh the upcoming window so the next
+            // few tracks' lyrics get prewarmed.
+            requestUpcomingItems()
         }
         if previousActiveWasPlaying != newActiveIsPlaying {
             onPlaybackStateChange?(newActiveIsPlaying)
@@ -390,12 +451,15 @@ class MusicAssistantPlayer: NSObject, Player {
         let state = dict["state"] as? String ?? "idle"
         let elapsed = dict["elapsed_time"] as? Double
 
+        let currentIndex = (dict["current_index"] as? NSNumber)?.intValue
+
         let currentItem = dict["current_item"] as? [String: Any]
         let mediaItem = currentItem?["media_item"] as? [String: Any]
         // media_item.name is the clean track title; current_item.name is a
         // combined "Artist - Title" display string (e.g. "Hatchie - Part That
         // Bleeds") which would poison provider lookups keyed by track name.
         let title = (mediaItem?["name"] as? String) ?? (currentItem?["name"] as? String)
+        let mediaItemUri = mediaItem?["uri"] as? String
         let artists = mediaItem?["artists"] as? [[String: Any]]
         let artist = artists?.first?["name"] as? String
         let album = (mediaItem?["album"] as? [String: Any])?["name"] as? String
@@ -414,7 +478,26 @@ class MusicAssistantPlayer: NSObject, Player {
             elapsedMs: elapsed.map { $0 * 1000 },
             elapsedLastUpdated: Date().timeIntervalSince1970,
             queueItemId: queueItemId,
-            imageURL: imagePath
+            imageURL: imagePath,
+            currentIndex: currentIndex,
+            mediaItemUri: mediaItemUri
+        )
+    }
+
+    /// Parse one element of a `player_queues/items` result into the metadata
+    /// needed for lyric prewarming.
+    static func parseUpcomingItem(_ dict: [String: Any]) -> MAUpcomingTrack? {
+        let mediaItem = dict["media_item"] as? [String: Any]
+        let title = (mediaItem?["name"] as? String) ?? (dict["name"] as? String)
+        guard title != nil else { return nil }
+        let artists = mediaItem?["artists"] as? [[String: Any]]
+        return MAUpcomingTrack(
+            uri: mediaItem?["uri"] as? String,
+            queueItemId: dict["queue_item_id"] as? String,
+            title: title,
+            artist: artists?.first?["name"] as? String,
+            album: (mediaItem?["album"] as? [String: Any])?["name"] as? String,
+            durationSec: (dict["duration"] as? NSNumber)?.doubleValue ?? (mediaItem?["duration"] as? NSNumber)?.doubleValue
         )
     }
 }

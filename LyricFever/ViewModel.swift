@@ -123,6 +123,57 @@ import MediaRemoteAdapter
                 }
             }
         }
+        musicAssistantPlayer.onUpcomingItems = { [weak self] upcoming in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.currentPlayer == .musicAssistant else { return }
+                self.preloadMusicAssistantQueueLyrics(upcoming)
+            }
+        }
+    }
+
+    /// Queue-ahead lyric prewarm: for the next few MA queue items, fetch
+    /// lyrics via Lyrics9x (which warms kaiosmini's cache + enrichment) and
+    /// store them straight into CoreData under the track's stable URI — so by
+    /// the time the track starts, display is an instant local cache hit and
+    /// never lands on a loading state.
+    @MainActor
+    func preloadMusicAssistantQueueLyrics(_ upcoming: [MAUpcomingTrack]) {
+        for item in upcoming {
+            guard let key = item.cacheKey, let title = item.title, let artist = item.artist,
+                  !maPreloadedKeys.contains(key) else { continue }
+            maPreloadedKeys.insert(key)
+            guard songObjectFromCoreData(for: key) == nil else { continue }
+            Task { @MainActor in
+                do {
+                    let ret = try await self.lyrics9xLyricProvider.fetchNetworkLyrics(
+                        trackName: title, trackID: key,
+                        currentlyPlayingArtist: artist, currentAlbumName: item.album,
+                        durationSeconds: item.durationSec.map { Int($0) })
+                    guard self.songObjectFromCoreData(for: key) == nil else { return }
+                    if ret.instrumental {
+                        let song = SongObject(from: [], with: self.coreDataContainer.viewContext, trackID: key, trackName: title)
+                        song.sourceProvider = "instrumental"
+                        song.userPicked = false
+                        self.saveCoreData()
+                        print("MA preload: \(artist) — \(title) marked instrumental")
+                    } else if !ret.lyrics.isEmpty {
+                        let processed = ret.processed(withSongName: title, duration: item.durationSec.map { Int($0 * 1000) } ?? 0)
+                        let song = SongObject(from: processed.lyrics, with: self.coreDataContainer.viewContext, trackID: key, trackName: title)
+                        song.sourceProvider = self.lyrics9xLyricProvider.providerName
+                        song.userPicked = false
+                        self.saveCoreData()
+                        print("MA preload: cached \(processed.lyrics.count) lines for \(artist) — \(title)")
+                    } else {
+                        // Leave misses uncached so the on-arrival full chain
+                        // (Spotify/LRCLIB/NetEase) still gets its shot.
+                        print("MA preload: no lyrics yet for \(artist) — \(title) (server cache warmed)")
+                    }
+                } catch {
+                    print("MA preload: failed for \(artist) — \(title): \(error)")
+                }
+            }
+        }
     }
     #endif
 
@@ -372,6 +423,12 @@ import MediaRemoteAdapter
     /// Monotonic id for translation fetches, so the stuck-state watchdog in
     /// `translationTask` only ever clears the spinner for its own fetch.
     @ObservationIgnored private var translationFetchGeneration = 0
+    /// True when the current track is known to have no lyrics BY DESIGN
+    /// (instrumental) — UI shows "Instrumental" instead of "unavailable" and
+    /// the fetch chain treats the sentinel as sticky.
+    var currentTrackIsInstrumental = false
+    /// Cache keys already preloaded this session (MA queue-ahead prewarm).
+    @ObservationIgnored private var maPreloadedKeys = Set<String>()
     var translationExists: Bool { !translatedLyric.isEmpty}
     
     // CoreData container (for saved lyrics)
@@ -659,6 +716,18 @@ import MediaRemoteAdapter
                     song.userPicked = false
                     saveCoreData()
                     return lyrics
+                } else if lyrics.instrumental {
+                    // The source knows this track has no lyrics BY DESIGN —
+                    // cache a sticky sentinel and stop the chain here.
+                    print("FetchAllNetworkLyrics: \(networkLyricProvider.providerName) marked track instrumental — sticky sentinel")
+                    currentTrackIsInstrumental = true
+                    let song = SongObject(from: [], with: coreDataContainer.viewContext, trackID: currentlyPlaying, trackName: currentlyPlayingName)
+                    song.appleMusicID = appleMusicPlayer.lastObservedCatalogID
+                    song.albumID = appleMusicPlayer.lastObservedAlbumCatalogID
+                    song.sourceProvider = "instrumental"
+                    song.userPicked = false
+                    saveCoreData()
+                    return NetworkFetchReturn(lyrics: [], colorData: nil, instrumental: true)
                 } else if networkLyricProvider is SpotifyLyricProvider {
                     print("FetchAllNetworkLyrics: no lyrics from \(networkLyricProvider.providerName)")
                     handleSpotifyNoLyricsFallback()
@@ -1184,7 +1253,11 @@ import MediaRemoteAdapter
                 // MA's queue_item_id is a stable per-play identifier — same role
                 // as Plexamp's ratingKey, more reliable than Apple Music's
                 // MediaRemote persistentID.
-                currentlyPlaying = musicAssistantPlayer.activeQueueId.flatMap { musicAssistantPlayer.queues[$0]?.queueItemId }
+                // Prefer the provider URI (apple_music://track/…, stable across
+                // replays) as the caching identity; fall back to the per-play
+                // queue_item_id when MA didn't attach a media_item.
+                let activeSnap = musicAssistantPlayer.activeQueueId.flatMap { musicAssistantPlayer.queues[$0] }
+                currentlyPlaying = activeSnap?.mediaItemUri ?? activeSnap?.queueItemId
                 currentlyPlayingName = track
                 currentlyPlayingArtist = artist
                 self.duration = duration
@@ -1499,6 +1572,9 @@ import MediaRemoteAdapter
     
     func fetchLyrics(for trackID: String, _ trackName: String, checkCoreDataFirst: Bool) async throws -> [LyricLine] {
         let initiatingTrackID = trackID
+        // Reset per-track; the sticky-sentinel and provider paths below flip
+        // it back on when this track is a known instrumental.
+        currentTrackIsInstrumental = false
         
         // AppleMusic catalog-ID CoreData lookup: when the player is Apple Music
         // and we have a catalog ID, check by appleMusicID first — this covers the
@@ -1509,10 +1585,13 @@ import MediaRemoteAdapter
             let request = SongObject.fetchRequest()
             request.predicate = NSPredicate(format: "appleMusicID == %@", amID)
             if let existing = try? coreDataContainer.viewContext.fetch(request).first,
-               !existing.lyricsWords.isEmpty || existing.userPicked || existing.sourceProvider == "none_found" {
+               !existing.lyricsWords.isEmpty || existing.userPicked || existing.sourceProvider == "none_found" || existing.sourceProvider == "instrumental" {
                 let lyrics = zip(existing.lyricsTimestamps, existing.lyricsWords).map { LyricLine(startTime: $0, words: $1) }
-                // sticky: skip network chain entirely if userPicked or none_found
-                if existing.userPicked || existing.sourceProvider == "none_found" {
+                // sticky: skip network chain entirely if userPicked, none_found, or instrumental
+                if existing.userPicked || existing.sourceProvider == "none_found" || existing.sourceProvider == "instrumental" {
+                    if existing.sourceProvider == "instrumental" {
+                        currentTrackIsInstrumental = true
+                    }
                     try Task.checkCancellation()
                     amplitude.track(eventType: "CoreData Fetch (appleMusicID sticky)")
                     if initiatingTrackID != self.currentlyPlaying {
@@ -1547,6 +1626,17 @@ import MediaRemoteAdapter
             }
             return lyrics
         } else {
+            // Instrumental sentinel is sticky — unlike none_found (which
+            // self-heals through the network in case a provider gained the
+            // track), no amount of retrying produces lyrics for an
+            // instrumental.
+            if checkCoreDataFirst, let existing = songObjectFromCoreData(for: trackID),
+               existing.sourceProvider == "instrumental" {
+                print("ViewModel FetchLyrics: instrumental sentinel for \(trackID) — skipping network")
+                currentTrackIsInstrumental = true
+                try Task.checkCancellation()
+                return []
+            }
             print("ViewModel FetchLyrics: empty/missing CoreData entry for \(trackID) — falling through to network (self-heal)")
             print("ViewModel FetchLyrics: no lyrics from core data, going to download from internet \(trackID) \(trackName)")
             print("ViewModel FetchLyrics: isFetching set to true")
@@ -1637,6 +1727,12 @@ import MediaRemoteAdapter
             await Task.yield()
             setCurrentPropertiesPublic()
         }
+    }
+
+    func songObjectFromCoreData(for trackID: String) -> SongObject? {
+        let fetchRequest: NSFetchRequest<SongObject> = SongObject.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "id == %@", trackID)
+        return (try? coreDataContainer.viewContext.fetch(fetchRequest))?.first
     }
 
     func fetchFromCoreData(for trackID: String) -> [LyricLine]? {

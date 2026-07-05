@@ -185,7 +185,7 @@ struct MenubarWindowView: View {
                         case .enabled:
                             currentHoveredItem = .disableLyrics
                         case .disabled:
-                            currentHoveredItem = .unavailableLyrics
+                            currentHoveredItem = viewmodel.currentTrackIsInstrumental ? .instrumentalTrack : .unavailableLyrics
                         case .clickable:
                             currentHoveredItem = .enableLyrics
                         default:

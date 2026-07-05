@@ -34,6 +34,9 @@ class Lyrics9xLyricProvider: LyricProvider {
         let translation: String?
         let language: String?
         let source: String?
+        /// Server marked this track instrumental (title auto-detect or manual
+        /// mark on the /streaming audit page) — no lyrics exist by design.
+        let instrumental: Bool?
     }
 
     /// Parse a server-returned LRC stream into a timestamp→text map keyed by
@@ -59,6 +62,18 @@ class Lyrics9xLyricProvider: LyricProvider {
 
     @MainActor
     func fetchNetworkLyrics(trackName: String, trackID: String, currentlyPlayingArtist: String?, currentAlbumName: String?) async throws -> NetworkFetchReturn {
+        let durationMs = ViewModel.shared.duration
+        return try await fetchNetworkLyrics(trackName: trackName, trackID: trackID,
+                                            currentlyPlayingArtist: currentlyPlayingArtist,
+                                            currentAlbumName: currentAlbumName,
+                                            durationSeconds: durationMs > 0 ? durationMs / 1000 : nil)
+    }
+
+    /// Variant with an explicit duration, for callers that aren't fetching the
+    /// CURRENTLY playing track (queue preloading passes the upcoming track's
+    /// own length so synthetic plain-lyric pacing is correct).
+    @MainActor
+    func fetchNetworkLyrics(trackName: String, trackID: String, currentlyPlayingArtist: String?, currentAlbumName: String?, durationSeconds: Int?) async throws -> NetworkFetchReturn {
         guard let artist = currentlyPlayingArtist, !artist.isEmpty else {
             print("Lyrics9x: missing artist; skipping")
             return NetworkFetchReturn(lyrics: [], colorData: nil)
@@ -73,9 +88,8 @@ class Lyrics9xLyricProvider: LyricProvider {
         // Track length lets the server synthesize sanely-paced timestamps for
         // plain (unsynced) lyrics — e.g. Genius-only niche artists — so they
         // still render in our LRC-driven UI.
-        let durationMs = ViewModel.shared.duration
-        if durationMs > 0 {
-            items.append(URLQueryItem(name: "duration", value: String(durationMs / 1000)))
+        if let durationSeconds, durationSeconds > 0 {
+            items.append(URLQueryItem(name: "duration", value: String(durationSeconds)))
         }
         guard var comps = URLComponents(string: Self.baseURL) else {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
@@ -92,6 +106,10 @@ class Lyrics9xLyricProvider: LyricProvider {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
         let decoded = try JSONDecoder().decode(LookupResponse.self, from: data)
+        if decoded.instrumental == true {
+            print("Lyrics9x: server says instrumental — no lyrics by design")
+            return NetworkFetchReturn(lyrics: [], colorData: nil, instrumental: true)
+        }
         if decoded.lyrics.isEmpty {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }

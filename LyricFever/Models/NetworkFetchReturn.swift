@@ -15,13 +15,17 @@ struct NetworkFetchReturn {
     let romanization: [String]?
     let translation: [String]?
     let language: String?
+    /// The source knows this track has no lyrics BY DESIGN (instrumental) —
+    /// distinct from "none found", it should stick and stop the chain.
+    let instrumental: Bool
 
-    init(lyrics: [LyricLine], colorData: Int32?, romanization: [String]? = nil, translation: [String]? = nil, language: String? = nil) {
+    init(lyrics: [LyricLine], colorData: Int32?, romanization: [String]? = nil, translation: [String]? = nil, language: String? = nil, instrumental: Bool = false) {
         self.lyrics = lyrics
         self.colorData = colorData
         self.romanization = romanization
         self.translation = translation
         self.language = language
+        self.instrumental = instrumental
     }
 
     func processed(withSongName songName: String, duration: Int) -> NetworkFetchReturn {
@@ -57,7 +61,8 @@ struct NetworkFetchReturn {
             colorData: colorData,
             romanization: filteredRoman.isEmpty ? nil : filteredRoman,
             translation: filteredTrans.isEmpty ? nil : filteredTrans,
-            language: language
+            language: language,
+            instrumental: instrumental
         )
     }
 }
