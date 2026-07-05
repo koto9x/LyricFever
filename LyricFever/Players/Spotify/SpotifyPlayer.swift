@@ -44,7 +44,12 @@ class SpotifyPlayer: @MainActor Player {
         }
     }
     var isPlaying: Bool {
-        spotifyScript?.playerState == .playing
+        // Same guard as AppleMusicPlayer: an unguarded ScriptingBridge read
+        // launches Spotify when the routing getter polls it.
+        guard isRunning else {
+            return false
+        }
+        return spotifyScript?.playerState == .playing
     }
     var isAuthorized: Bool {
         guard isRunning else {

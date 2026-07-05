@@ -98,9 +98,13 @@ import MediaRemoteAdapter
     /// WebSocket (see MusicAssistantPlayer) — same shape as the Plexamp
     /// observation above, just driven by a socket instead of an HTTP poll.
     private func initMusicAssistantObservation() {
+        // Unlike Plexamp's HTTP poll (which we gate on UI visibility to avoid
+        // hammering localhost), the MA socket is a single cheap push
+        // connection — and it must stay up while the popover is CLOSED or the
+        // menubar song display and track detection go dark. Gate on the
+        // feature flag only.
         musicAssistantPlayer.shouldConnect = { [weak self] in
-            guard let self else { return false }
-            return self.userDefaultStorage.useMusicAssistant && self.isLyricFeverUIActive
+            self?.userDefaultStorage.useMusicAssistant ?? false
         }
         musicAssistantPlayer.onTrackChange = { [weak self] queueItemId in
             guard let self else { return }
@@ -423,8 +427,18 @@ import MediaRemoteAdapter
             // into one hub, so if it's actively playing something there's no
             // ambiguity about which app the user is actually listening to —
             // unlike the Plexamp/Apple Music/Spotify race this replaces.
-            if self.userDefaultStorage.useMusicAssistant, musicAssistantPlayer.isPlaying {
-                return .musicAssistant
+            if self.userDefaultStorage.useMusicAssistant {
+                if musicAssistantPlayer.isPlaying {
+                    return .musicAssistant
+                }
+                // MA paused but still the active hub: stay on it (so pausing
+                // doesn't blank the lyrics) unless some local app is actively
+                // playing — then the user has clearly moved elsewhere.
+                if musicAssistantPlayer.activeQueueId != nil,
+                   !(plexampPlayer.isRunning && plexampPlayer.isPlaying),
+                   !appleMusicPlayer.isPlaying, !spotifyPlayer.isPlaying {
+                    return .musicAssistant
+                }
             }
             // Routing priority for `usePlexamp = true`:
             //   1. Plexamp is actively playing → use Plexamp.

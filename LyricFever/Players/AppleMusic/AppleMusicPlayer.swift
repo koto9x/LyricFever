@@ -55,7 +55,14 @@ class AppleMusicPlayer: Player {
         return true
     }
     var isPlaying: Bool {
-        appleMusicScript?.playerState == .playing
+        // ScriptingBridge property access sends an Apple Event, which LAUNCHES
+        // Music.app if it isn't running. This getter is on the hot path of the
+        // currentPlayer routing, so an unguarded read here forces Music.app
+        // open just by having Lyric Fever running.
+        guard isRunning else {
+            return false
+        }
+        return appleMusicScript?.playerState == .playing
     }
     var isRunning: Bool {
         if NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").first != nil {

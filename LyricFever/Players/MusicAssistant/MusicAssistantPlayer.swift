@@ -31,7 +31,11 @@ struct MAQueueSnapshot {
     let album: String?
     let durationMs: Int?
     let elapsedMs: Double?
-    let elapsedLastUpdated: Double?  // unix seconds, server clock
+    /// LOCAL unix seconds at which `elapsedMs` was received. Anchoring the
+    /// playback-position projection to our own clock (instead of the server's
+    /// `elapsed_time_last_updated`) keeps lyric sync immune to clock skew
+    /// between the MA host and this Mac.
+    let elapsedLastUpdated: Double?
     let queueItemId: String?
     let imageURL: String?
 }
@@ -95,8 +99,12 @@ class MusicAssistantPlayer: NSObject, Player {
         gateTask?.cancel()
         gateTask = Task { [weak self] in
             while !Task.isCancelled {
-                self?.connectIfNeeded()
-                self?.disconnectIfNoLongerNeeded()
+                // All connection state is confined to the main actor; the
+                // WS receive path hops there too (see receiveLoop).
+                await MainActor.run { [weak self] in
+                    self?.connectIfNeeded()
+                    self?.disconnectIfNoLongerNeeded()
+                }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -117,13 +125,12 @@ class MusicAssistantPlayer: NSObject, Player {
     @MainActor
     var currentTime: TimeInterval? {
         guard let snap = activeSnapshot, var ms = snap.elapsedMs else { return nil }
-        // Project forward by wall-clock time since the server's last tick so
-        // the highlight advances smoothly between `queue_time_updated` events
-        // (MA only sends one roughly per second, same cadence as the old
-        // Plexamp poll).
+        // Project forward by wall-clock time since we received the last
+        // position update. MA broadcasts `queue_time_updated` sparsely (on
+        // state changes/seeks, not per-second), so this projection is the
+        // primary driver of lyric sync between events.
         if snap.state == "playing", let lastUpdated = snap.elapsedLastUpdated {
-            let serverNow = Date().timeIntervalSince1970
-            ms += max(0, serverNow - lastUpdated) * 1000
+            ms += max(0, Date().timeIntervalSince1970 - lastUpdated) * 1000
         }
         return ms
     }
@@ -264,10 +271,13 @@ class MusicAssistantPlayer: NSObject, Player {
             switch result {
                 case .failure(let error):
                     print("MusicAssistantPlayer: WS receive failed: \(error)")
-                    self.scheduleReconnect()
+                    DispatchQueue.main.async { self.scheduleReconnect() }
                 case .success(let message):
                     if case .string(let text) = message {
-                        self.handleIncoming(text)
+                        // Serialize all state mutation onto the main queue —
+                        // `queues`/`activeQueueId` are read by SwiftUI on main,
+                        // and main is FIFO so message order is preserved.
+                        DispatchQueue.main.async { self.handleIncoming(text) }
                     }
                     self.receiveLoop()
             }
@@ -287,6 +297,13 @@ class MusicAssistantPlayer: NSObject, Player {
         if json["message_id"] != nil {
             if json["error_code"] != nil {
                 print("MusicAssistantPlayer: command errored: \(json["details"] ?? "unknown")")
+                if !authenticated {
+                    // Auth was rejected (bad/expired token). Drop the socket and
+                    // retry on the reconnect cadence instead of sitting on a
+                    // connection that will refuse every command.
+                    disconnect()
+                    scheduleReconnect()
+                }
                 return
             }
             if !authenticated {
@@ -318,61 +335,67 @@ class MusicAssistantPlayer: NSObject, Player {
                 guard let queueId = objectId else { return }
                 let elapsed: Double? = (data as? NSNumber)?.doubleValue
                 guard let elapsed, let existing = queues[queueId] else { return }
+                // Position-only update: no state or item change, so no
+                // callbacks and no active-queue recompute needed.
                 queues[queueId] = MAQueueSnapshot(
                     queueId: existing.queueId, state: existing.state, title: existing.title,
                     artist: existing.artist, album: existing.album, durationMs: existing.durationMs,
                     elapsedMs: elapsed * 1000, elapsedLastUpdated: Date().timeIntervalSince1970,
                     queueItemId: existing.queueItemId, imageURL: existing.imageURL
                 )
-                recomputeActiveQueue()
             default:
                 break
         }
     }
 
     private func upsert(snapshot: MAQueueSnapshot) {
-        let previousItemId = queues[snapshot.queueId]?.queueItemId
-        let previousState = queues[snapshot.queueId]?.state
+        let previousActiveItemId = activeSnapshot?.queueItemId
+        let previousActiveWasPlaying = activeSnapshot?.state == "playing"
         queues[snapshot.queueId] = snapshot
         recomputeActiveQueue()
-        // Only fire callbacks when this queue is (or just became) the active one.
-        guard activeQueueId == snapshot.queueId else { return }
-        if previousItemId != snapshot.queueItemId {
-            onTrackChange?(snapshot.queueItemId)
+        // Diff the ACTIVE queue's track/state across the whole update, so a
+        // change fires exactly once whether it came from the active queue's
+        // own snapshot or from the active queue switching to another one.
+        let newActiveItemId = activeSnapshot?.queueItemId
+        let newActiveIsPlaying = activeSnapshot?.state == "playing"
+        if previousActiveItemId != newActiveItemId {
+            onTrackChange?(newActiveItemId)
         }
-        let wasPlaying = previousState == "playing"
-        let nowPlaying = snapshot.state == "playing"
-        if wasPlaying != nowPlaying {
-            onPlaybackStateChange?(nowPlaying)
+        if previousActiveWasPlaying != newActiveIsPlaying {
+            onPlaybackStateChange?(newActiveIsPlaying)
         }
     }
 
     /// Picks whichever queue is playing. Sticks with the current choice if it's
-    /// still playing, to avoid flapping when two queues transition in the same
-    /// tick (e.g. transferring playback between speakers).
+    /// still playing — and also while it's merely paused, so pausing MA doesn't
+    /// instantly blank the lyrics — handing over only when a DIFFERENT queue
+    /// starts actively playing.
     private func recomputeActiveQueue() {
-        if let current = activeQueueId, queues[current]?.state == "playing" {
+        if let current = activeQueueId, queues[current] != nil {
+            if queues[current]?.state == "playing" {
+                return
+            }
+            if let playing = queues.values.first(where: { $0.state == "playing" }) {
+                activeQueueId = playing.queueId
+            }
             return
         }
-        let previous = activeQueueId
         activeQueueId = queues.values.first { $0.state == "playing" }?.queueId
-        if previous != activeQueueId {
-            onTrackChange?(activeSnapshot?.queueItemId)
-            onPlaybackStateChange?(activeSnapshot?.state == "playing")
-        }
     }
 
     // MARK: - Parsing
 
-    private static func parseQueueDict(_ dict: [String: Any]) -> MAQueueSnapshot? {
+    static func parseQueueDict(_ dict: [String: Any]) -> MAQueueSnapshot? {
         guard let queueId = dict["queue_id"] as? String else { return nil }
         let state = dict["state"] as? String ?? "idle"
         let elapsed = dict["elapsed_time"] as? Double
-        let elapsedUpdated = dict["elapsed_time_last_updated"] as? Double
 
         let currentItem = dict["current_item"] as? [String: Any]
         let mediaItem = currentItem?["media_item"] as? [String: Any]
-        let title = (currentItem?["name"] as? String) ?? (mediaItem?["name"] as? String)
+        // media_item.name is the clean track title; current_item.name is a
+        // combined "Artist - Title" display string (e.g. "Hatchie - Part That
+        // Bleeds") which would poison provider lookups keyed by track name.
+        let title = (mediaItem?["name"] as? String) ?? (currentItem?["name"] as? String)
         let artists = mediaItem?["artists"] as? [[String: Any]]
         let artist = artists?.first?["name"] as? String
         let album = (mediaItem?["album"] as? [String: Any])?["name"] as? String
@@ -389,7 +412,7 @@ class MusicAssistantPlayer: NSObject, Player {
             album: album,
             durationMs: durationSeconds.map { Int($0 * 1000) },
             elapsedMs: elapsed.map { $0 * 1000 },
-            elapsedLastUpdated: elapsedUpdated,
+            elapsedLastUpdated: Date().timeIntervalSince1970,
             queueItemId: queueItemId,
             imageURL: imagePath
         )
