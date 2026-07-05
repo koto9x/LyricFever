@@ -70,6 +70,13 @@ class Lyrics9xLyricProvider: LyricProvider {
         if let album = currentAlbumName, !album.isEmpty {
             items.append(URLQueryItem(name: "album_name", value: album))
         }
+        // Track length lets the server synthesize sanely-paced timestamps for
+        // plain (unsynced) lyrics — e.g. Genius-only niche artists — so they
+        // still render in our LRC-driven UI.
+        let durationMs = ViewModel.shared.duration
+        if durationMs > 0 {
+            items.append(URLQueryItem(name: "duration", value: String(durationMs / 1000)))
+        }
         guard var comps = URLComponents(string: Self.baseURL) else {
             return NetworkFetchReturn(lyrics: [], colorData: nil)
         }
