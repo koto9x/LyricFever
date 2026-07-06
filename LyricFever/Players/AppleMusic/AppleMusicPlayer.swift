@@ -19,27 +19,32 @@ class AppleMusicPlayer: Player {
         return baseID.count == 22 ? baseID + "_" : baseID
     }
     
+    // Every ScriptingBridge read below is isRunning-guarded: an unguarded
+    // access sends an Apple Event that LAUNCHES Music.app — including from
+    // the launch-window refreshLyrics path when another player is active.
     var albumName: String? {
-        appleMusicScript?.currentTrack?.album
+        guard isRunning else { return nil }
+        return appleMusicScript?.currentTrack?.album
     }
     var artistName: String? {
-        appleMusicScript?.currentTrack?.artist
+        guard isRunning else { return nil }
+        return appleMusicScript?.currentTrack?.artist
     }
     var trackName: String? {
-        appleMusicScript?.currentTrack?.name
+        guard isRunning else { return nil }
+        return appleMusicScript?.currentTrack?.name
     }
-    
+
     @MainActor
     var currentTime: TimeInterval? {
-        guard let playerPosition = appleMusicScript?.playerPosition else {
+        guard isRunning, let playerPosition = appleMusicScript?.playerPosition else {
             return nil
         }
         let viewmodel = ViewModel.shared
         return playerPosition * 1000 + 400 + (viewmodel.animatedDisplay ? 400 : 0) + (viewmodel.airplayDelay ?  -2000 : 0)
     }
     var duration: Int? {
-        guard let seconds = appleMusicScript?.currentTrack?.duration.map(Int.init) else {
-            print("Apple Music Player: Couldn't fetch duration")
+        guard isRunning, let seconds = appleMusicScript?.currentTrack?.duration.map(Int.init) else {
             return nil
         }
         return seconds * 1000

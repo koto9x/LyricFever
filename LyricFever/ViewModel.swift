@@ -1965,7 +1965,11 @@ extension ViewModel {
                     try Task.checkCancellation()
                     self.currentlyPlaying = alternativeID
                 } else {
+                    // No mapping found — this fetch is OVER; the spinner must
+                    // not outlive it (nil result doesn't throw, so the catch
+                    // below never fires for this path).
                     lyricsIsEmptyPostLoad = true
+                    isFetching = false
                 }
             }
         } catch {
