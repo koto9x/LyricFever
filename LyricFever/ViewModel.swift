@@ -94,6 +94,32 @@ import MediaRemoteAdapter
         }
     }
 
+    /// The smart-switching safety net. `currentPlayer` is COMPUTED from
+    /// non-observable player states (MA socket, ScriptingBridge isPlaying,
+    /// Plexamp poll), so SwiftUI's `.onChange(of: currentPlayer)` only fires
+    /// when an OBSERVABLE dependency changes — a switch caused purely by one
+    /// app pausing and another starting can slip through if that app's own
+    /// event source (notification / poll / socket callback) misses a beat.
+    /// This watchdog re-evaluates the routing every 3s and re-detects the
+    /// current track whenever the effective player actually changed, so the
+    /// app can never stay stuck on a stale player for more than a few
+    /// seconds regardless of which event went missing.
+    private func startPlayerSwitchWatchdog() {
+        Task { @MainActor [weak self] in
+            var last: PlayerType? = nil
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self else { return }
+                let now = self.currentPlayer
+                if let previous = last, now != previous {
+                    print("PlayerSwitchWatchdog: \(previous) → \(now) — re-detecting current track")
+                    self.setCurrentPropertiesPublic()
+                }
+                last = now
+            }
+        }
+    }
+
     /// Music Assistant pushes track-change + play-state updates over its own
     /// WebSocket (see MusicAssistantPlayer) — same shape as the Plexamp
     /// observation above, just driven by a socket instead of an HTTP poll.
@@ -641,6 +667,7 @@ import MediaRemoteAdapter
         #if os(macOS)
         initPlexampObservation()
         initMusicAssistantObservation()
+        startPlayerSwitchWatchdog()
         #endif
         
         coreDataContainer.loadPersistentStores { description, error in
