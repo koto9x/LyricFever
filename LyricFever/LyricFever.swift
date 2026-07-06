@@ -264,6 +264,20 @@ struct LyricFever: App {
                 }
         }
         .defaultSize(width: NSScreen.mainWidth, height: NSScreen.mainHeight)
+        // Real menu item (with live checkmark) so Float on Top is
+        // discoverable beyond the ⌘⇧T shortcut it also advertises.
+        .commands {
+            CommandGroup(after: .windowArrangement) {
+                Toggle("Float on Top", isOn: Binding(
+                    get: { viewmodel.userDefaultStorage.lyricsFloatOnTop },
+                    set: { newValue in
+                        viewmodel.userDefaultStorage.lyricsFloatOnTop = newValue
+                        NSApp.windows.first(where: { $0.identifier?.rawValue == "fullscreen" })?
+                            .level = newValue ? .floating : .normal
+                    }))
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+            }
+        }
         Window("Lyric Fever: Onboarding", id: "onboarding") { // << here !!
             OnboardingWindow().frame(minWidth: 700, maxWidth: 700, minHeight: 600, maxHeight: 600, alignment: .center)
                 .environment(viewmodel)
