@@ -182,6 +182,12 @@ import MediaRemoteAdapter
             print("Track info received")
             Task { @MainActor in
                 guard let payload = data?.payload else { return }
+                // Music Assistant is the source of truth while it's playing —
+                // MediaRemote chatter (MA's own web player, browsers, misc
+                // Now Playing apps) must not steer track state or fetches.
+                if self.userDefaultStorage.useMusicAssistant, self.musicAssistantPlayer.isPlaying {
+                    return
+                }
 
                 // ── Artwork (app-agnostic, title-guarded) ────────────────
                 // Apply artwork from ANY MediaRemote source — Music, Plexamp,
@@ -1920,6 +1926,16 @@ extension ViewModel {
     }
     
     func appleMusicNetworkFetch() async throws {
+        // MusicKit fetches are for the APPLE MUSIC player path only. When
+        // Music Assistant drives playback, Now Playing registrations (the MA
+        // web player among them) can still tickle the MediaRemote workaround
+        // into calling this — which flips the isFetching spinner on for a
+        // track MusicKit can't resolve, re-triggered on every repeat-one
+        // loop. Refuse before touching any state.
+        guard currentPlayer == .appleMusic else {
+            print("Apple Music Network Fetch: ignored — currentPlayer is \(currentPlayer)")
+            return
+        }
         isFetching = true
 //        do {
 //            print("Apple Music Network Fetch: 3 second sleep")

@@ -33,6 +33,10 @@ class UserDefaultStorage {
     // new Space and hides the menubar/Dock).
     @ObservableUserDefault(.init(key: "useWindowedFullscreen", defaultValue: true, store: .standard))
     @ObservationIgnored var useWindowedFullscreen: Bool
+    // Keep the lyrics window above everything (toggled with ⌘⇧T in the
+    // fullscreen window) — pairs with mvd's float verb for the video side.
+    @ObservableUserDefault(.init(key: "lyricsFloatOnTop", defaultValue: false, store: .standard))
+    @ObservationIgnored var lyricsFloatOnTop: Bool
     #endif
     @ObservableUserDefault(.init(key: "romanize", defaultValue: true, store: .standard))
     @ObservationIgnored var romanize: Bool

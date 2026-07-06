@@ -212,6 +212,14 @@ struct LyricFever: App {
                                 fullscreenWindow?.toggleFullScreen(nil)
                                 return nil
                             }
+                            if aEvent.keyCode == 17 // T — ⌘⇧T floats the lyrics on top
+                                && aEvent.modifierFlags.contains(.command)
+                                && aEvent.modifierFlags.contains(.shift) {
+                                let newValue = !viewmodel.userDefaultStorage.lyricsFloatOnTop
+                                viewmodel.userDefaultStorage.lyricsFloatOnTop = newValue
+                                fullscreenWindow?.level = newValue ? .floating : .normal
+                                return nil
+                            }
                             return aEvent
                         }
                     Task { @MainActor in
@@ -235,7 +243,7 @@ struct LyricFever: App {
                             window.titleVisibility = .hidden
                             window.isMovable = true
                             window.isMovableByWindowBackground = true
-                            window.level = .normal
+                            window.level = viewmodel.userDefaultStorage.lyricsFloatOnTop ? .floating : .normal
                             window.setFrame(screen.visibleFrame, display: true)
                             // collectionBehavior last, after styleMask is settled, so the green
                             // traffic light stays enabled across macOS versions.
