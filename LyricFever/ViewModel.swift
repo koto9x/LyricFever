@@ -1932,8 +1932,11 @@ extension ViewModel {
         // into calling this — which flips the isFetching spinner on for a
         // track MusicKit can't resolve, re-triggered on every repeat-one
         // loop. Refuse before touching any state.
-        guard currentPlayer == .appleMusic else {
-            print("Apple Music Network Fetch: ignored — currentPlayer is \(currentPlayer)")
+        guard currentPlayer == .appleMusic, appleMusicPlayer.isRunning else {
+            // Also refuses during the launch window: before the MA socket
+            // connects, routing momentarily falls through to .appleMusic and
+            // launch-time refreshLyrics would fire a doomed MusicKit fetch.
+            print("Apple Music Network Fetch: ignored — currentPlayer is \(currentPlayer), running=\(appleMusicPlayer.isRunning)")
             return
         }
         isFetching = true
@@ -1949,19 +1952,26 @@ extension ViewModel {
         
         // Task cancelled means we're working with old song data, so dont update Spotify ID with old song's ID
         
-        // search for equivalent spotify song
-        if let spotifyResult = try await musicToSpotifyHelper() {
-            self.currentlyPlayingName = spotifyResult.SpotifyName
-            self.currentlyPlayingArtist = spotifyResult.SpotifyArtist
-            self.currentAlbumName = spotifyResult.SpotifyAlbum
-            self.currentlyPlaying = spotifyResult.SpotifyID
-        } else {
-            if let alternativeID = appleMusicPlayer.alternativeID, alternativeID != "" {
-                try Task.checkCancellation()
-                self.currentlyPlaying = alternativeID
+        // search for equivalent spotify song. Any failure MUST clear the
+        // spinner — an unhandled throw here was the immortal loading state.
+        do {
+            if let spotifyResult = try await musicToSpotifyHelper() {
+                self.currentlyPlayingName = spotifyResult.SpotifyName
+                self.currentlyPlayingArtist = spotifyResult.SpotifyArtist
+                self.currentAlbumName = spotifyResult.SpotifyAlbum
+                self.currentlyPlaying = spotifyResult.SpotifyID
             } else {
-                lyricsIsEmptyPostLoad = true
+                if let alternativeID = appleMusicPlayer.alternativeID, alternativeID != "" {
+                    try Task.checkCancellation()
+                    self.currentlyPlaying = alternativeID
+                } else {
+                    lyricsIsEmptyPostLoad = true
+                }
             }
+        } catch {
+            print("Apple Music Network Fetch: failed (\(error)) — clearing isFetching")
+            isFetching = false
+            throw error
         }
         
         
