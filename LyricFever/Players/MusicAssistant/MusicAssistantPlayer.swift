@@ -183,6 +183,12 @@ class MusicAssistantPlayer: NSObject, Player {
         if snap.state == "playing", let lastUpdated = snap.elapsedLastUpdated {
             ms += max(0, Date().timeIntervalSince1970 - lastUpdated) * 1000
         }
+        // Repeat-one queues report CUMULATIVE elapsed (e.g. 327s on a 257s
+        // song), which scrolls the lyrics past the end and looks frozen.
+        // Wrap by track length so loops stay in sync on every pass.
+        if let duration = snap.durationMs, duration > 0, ms > Double(duration) {
+            ms = ms.truncatingRemainder(dividingBy: Double(duration))
+        }
         return ms
     }
 

@@ -429,6 +429,11 @@ import MediaRemoteAdapter
     var currentTrackIsInstrumental = false
     /// Cache keys already preloaded this session (MA queue-ahead prewarm).
     @ObservationIgnored private var maPreloadedKeys = Set<String>()
+    /// One config-update retry per track: Apple Translation's
+    /// needsConfigUpdate → new session → fail again would otherwise loop the
+    /// "translating" state forever (observed as a stuck loading spinner +
+    /// Translation Failure hover).
+    @ObservationIgnored private var translationConfigRetried = false
     var translationExists: Bool { !translatedLyric.isEmpty}
     
     // CoreData container (for saved lyrics)
@@ -904,8 +909,16 @@ import MediaRemoteAdapter
                     }
                 }
             case .needsConfigUpdate(let language):
-                // TODO: why do i sleep?
-//                try? await Task.sleep(for: .seconds(1))
+                if translationConfigRetried {
+                    // Already retried with the detected language once — a
+                    // second failure means this pair genuinely can't
+                    // translate right now (missing model / unsupported).
+                    // Stop the spinner instead of looping the session.
+                    print("Translation Service: config retry already spent — giving up for this track")
+                    isFetchingTranslation = false
+                    return
+                }
+                translationConfigRetried = true
                 translationSessionConfig = TranslationSession.Configuration(source: language, target: userLocaleLanguage)
             case .failure:
                 print("Translation Service: isFetchingTranslation set to false due to failure")
@@ -1582,6 +1595,7 @@ import MediaRemoteAdapter
         // Reset per-track; the sticky-sentinel and provider paths below flip
         // it back on when this track is a known instrumental.
         currentTrackIsInstrumental = false
+        translationConfigRetried = false
         
         // AppleMusic catalog-ID CoreData lookup: when the player is Apple Music
         // and we have a catalog ID, check by appleMusicID first — this covers the
